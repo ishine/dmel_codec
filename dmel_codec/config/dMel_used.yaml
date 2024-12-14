@@ -1,0 +1,165 @@
+project: vq-gan-pretrain
+seed: 114514
+
+defaults:
+  - _self_
+  - person: wzy
+
+trainer:
+  _target_: lightning.pytorch.Trainer
+  accelerator: gpu
+  devices:
+  - 0
+  precision: 32
+  max_steps: 1000000
+  val_check_interval: 2000
+  log_every_n_steps: 50
+  max_epochs: 1000
+  strategy: ddp_find_unused_parameters_true
+
+sample_rate: 24000
+hop_length: 256
+num_mels: 100
+n_fft: 1024
+win_length: 1024
+concat_channels_dim: ??? # larger than dmel_groups, such as (7 * dmel_groups) if downsample_factor is [2, 2]
+dmel_groups: ??? # Must be a divisor of num_mels
+pad_length: 0
+
+data:
+  _target_: dmel_codec.datasets.VQGANDataModule
+  train_dataset:
+    _target_: dmel_codec.datasets.VQGANDataset
+    filelist: ??? # path for train filelist
+    sample_rate: ${sample_rate}
+    hop_length: ${hop_length}
+    slice_frames: 256
+
+  val_dataset:
+    _target_: datasets.VQGANDataset
+    filelist: ??? # path for val filelist
+    sample_rate: ${sample_rate}
+    hop_length: ${hop_length}
+    slice_frames: 512
+
+  num_workers: 60
+  batch_size: 120
+  val_batch_size: 8
+
+model:
+  _target_: dmel_codec.models.lit_modules.VQGAN
+  sampling_rate: ${sample_rate}
+  weight_adv: 0.2
+  weight_vq: 1.0
+  weight_mel: 1.0
+  freeze_encoder: false
+  quanlity_linear: ${concat_channels_dim}
+  dmel_groups: ${dmel_groups}
+
+  encoder:
+    _target_: dmel_codec.models.modules.wavenet.WaveNet
+    input_channels: ??? # num_mels // dmel_groups
+    residual_channels: ??? # larger than input_channels, such as (7 * dmel_groups) if downsample_factor is [2, 2]
+    residual_layers: 8
+    dilation_cycle: 4
+
+  quantizer:
+    _target_: dmel_codec.models.modules.fsq.DownsampleFiniteScalarQuantize
+    input_dim: ${concat_channels_dim}
+    n_codebooks: 1
+    n_groups: ${dmel_groups}
+    levels:
+    - 8
+    - 6
+    is_dmel: true
+    downsample_factor:
+    - 2
+    - 2
+
+  decoder:
+    _target_: dmel_codec.models.modules.wavenet.WaveNet
+    input_channels: ${concat_channels_dim}
+    output_channels: ${num_mels}
+    residual_channels: ${concat_channels_dim}
+    residual_layers: 20
+    dilation_cycle: 4
+    condition_channels: ${concat_channels_dim}
+
+  discriminator:
+    _target_: dmel_codec.models.modules.discriminator.Discriminator
+
+  vocoder:
+    _target_: dmel_codec.models.modules.bigvgan.bigvgan.BigVGAN
+    ckpt_path: ??? # path for bigvgan ckpt, if null, the codec will not have vocoder and decoder modules
+    h_path: ??? # must point the json path for bigvgan config
+
+  encode_mel_transform:
+    _target_: dmel_codec.utils.LogMelSpectrogram
+    sample_rate: ${sample_rate}
+    n_fft: ${n_fft}
+    hop_length: ${hop_length}
+    win_length: ${win_length}
+    n_mels: ${num_mels}
+    f_min: 0
+    f_max: 12000
+
+  gt_mel_transform:
+    _target_: dmel_codec.utils.LogMelSpectrogram
+    sample_rate: ${sample_rate}
+    n_fft: ${n_fft}
+    hop_length: ${hop_length}
+    win_length: ${win_length}
+    n_mels: ${num_mels}
+    f_min: 0
+    f_max: 12000
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+    betas:
+    - 0.8
+    - 0.99
+    eps: 1e-05
+    weight_decay: 0.01
+
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.LambdaLR
+    _partial_: true
+    lr_lambda:
+      _target_: dmel_codec.utils.get_cosine_schedule_with_warmup_lr_lambda
+      _partial_: true
+      num_warmup_steps: 100
+      num_training_steps: ${trainer.max_steps} 
+      final_lr_ratio: 0.05
+
+callbacks:
+  rich_progress_bar:
+    _target_: lightning.pytorch.callbacks.RichProgressBar
+
+  model_summary:
+    _target_: lightning.pytorch.callbacks.ModelSummary
+    max_depth: 1
+
+  model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    every_n_train_steps: ${trainer.val_check_interval}
+    dirpath: ??? # dir for saving ckpt
+    filename: ??? # format: '{epoch:03d}-{step:06d}_20hz' filename for saving ckpt
+    save_top_k: 1
+    verbose: true
+
+  grad_norm_monitor:
+    sub_module:
+    - encoder
+    - decoder
+    - quantizer
+    - discriminator
+
+tensorboard_logger:
+  _target_: lightning.pytorch.loggers.TensorBoardLogger
+  save_dir: ??? # dir for saving all tensorboard logs
+  name: ??? # folder name for saving tensorboard logs
+  log_graph: true
