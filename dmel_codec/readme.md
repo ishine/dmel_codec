@@ -1,13 +1,33 @@
-# steps
+# independent dmel_codec
+An audio codec named dmel_codec
 
-1. complete config/person/yours.yaml
-2. run generate_filelist.py
+# Environment build
+1. conda create -n dmel_codec python=3.10
+2. git clone https://github.com/wuzhiyue111/dmel_codec.git
+3. cd dmel_codec
+4. pip install -e .
+
+# Run experiment
+
+
+```bibtex
+@article{bai2024dmel,
+  title={dmel: Speech tokenization made simple},
+  author={Bai, He and Likhomanenko, Tatiana and Zhang, Ruixiang and Gu, Zijin and Aldeneh, Zakaria and Jaitly, Navdeep},
+  journal={arXiv preprint arXiv:2407.15835},
+  year={2024}
+}
 ```
-python generate_filelist.py person=zh_magia_v100
+
+```bibtex
+@article{langman2024spectral,
+  title={Spectral Codecs: Spectrogram-Based Audio Codecs for High Quality Speech Synthesis},
+  author={Langman, Ryan and Juki{\'c}, Ante and Dhawan, Kunal and Koluguri, Nithin Rao and Ginsburg, Boris},
+  journal={arXiv preprint arXiv:2406.05298},
+  year={2024}
+}
 ```
-3. run experiment
-```
-python train.py person=zh_magia_v100 experiment=dmel_pretrain
-python train.py person=zh_magia_v100 experiment=fsq_pretrain
-python train.py person=zh_magia_v100 experiment=dmel_pertrain_ngroups10_ncodebooks1_levels86_downsample22_encoderresiduallayers16
-```
+
+## Acknowledgements
+- [fish-speech](https://github.com/fishaudio/fish-speech)
+- [bigvgan](https://github.com/NVIDIA/BigVGAN)

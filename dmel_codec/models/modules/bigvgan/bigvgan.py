@@ -14,10 +14,10 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn.utils import weight_norm, remove_weight_norm
 
-from . import activations
-from .utils import init_weights, get_padding
-from .alias_free_activation.torch.act import Activation1d as TorchActivation1d
-from .env import AttrDict
+from dmel_codec.models.modules.bigvgan.alias_free_activation import activations
+from dmel_codec.models.modules.bigvgan.utils import init_weights, get_padding
+from dmel_codec.models.modules.bigvgan.alias_free_activation.torch.act import Activation1d as TorchActivation1d
+from dmel_codec.models.modules.bigvgan.env import AttrDict
 
 from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
 

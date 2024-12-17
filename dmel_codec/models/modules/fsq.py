@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from vector_quantize_pytorch import GroupedResidualFSQ
 
-from .firefly import ConvNeXtBlock
+from dmel_codec.models.modules.firefly import ConvNeXtBlock
 
 
 @dataclass

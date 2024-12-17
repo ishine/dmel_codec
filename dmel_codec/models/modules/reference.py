@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .wavenet import WaveNet
+from dmel_codec.models.modules.wavenet import WaveNet
 
 
 class ReferenceEncoder(WaveNet):

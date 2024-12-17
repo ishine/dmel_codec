@@ -16,12 +16,11 @@ import soundfile as sf
 # from glob import glob
 import torch
 from lightning import LightningDataModule
-from pedalboard.io import AudioFile
 
 # from os import path
 from torch.utils.data import DataLoader, Dataset  # , WeightedRandomSampler
 from torchaudio import transforms as T
-from utils.logger import RankedLogger
+from dmel_codec.utils.logger import RankedLogger
 
 # import os
 
@@ -100,20 +99,21 @@ class VQGANDataset(Dataset):
 
         # try:
         if ext == "mp3":
-            with AudioFile(filename) as f:
-                audio_length = f.frames
-                audio_sr = f.samplerate
-                if audio_length * self.target_sr / audio_sr <= self.sample_size * size_ratio:
-                    raise Exception(f"The audio file {filename} too short, skipped")
+            # with AudioFile(filename) as f:
+            #     audio_length = f.frames
+            #     audio_sr = f.samplerate
+            #     if audio_length * self.target_sr / audio_sr <= self.sample_size * size_ratio:
+            #         raise Exception(f"The audio file {filename} too short, skipped")
 
-                required_length_frame = math.ceil(self.sample_size * audio_sr / self.target_sr) + extra_frames
-                current_length_frame = audio_length
-                max_ofs = max(0, current_length_frame - required_length_frame)
+            #     required_length_frame = math.ceil(self.sample_size * audio_sr / self.target_sr) + extra_frames
+            #     current_length_frame = audio_length
+            #     max_ofs = max(0, current_length_frame - required_length_frame)
 
-                offset = random.randint(0, max_ofs) if (randomize and max_ofs) else 0
-                f.seek(offset)
-                audio = f.read(min(required_length_frame, audio_length - offset))
-                audio = torch.mean(torch.from_numpy(audio), dim=0, keepdim=True)
+            #     offset = random.randint(0, max_ofs) if (randomize and max_ofs) else 0
+            #     f.seek(offset)
+            #     audio = f.read(min(required_length_frame, audio_length - offset))
+            #     audio = torch.mean(torch.from_numpy(audio), dim=0, keepdim=True)
+            pass
 
         else: # for wav, flac and other common waveform type
             info = sf.info(filename)
