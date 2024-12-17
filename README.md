@@ -1,6 +1,15 @@
 # independent dmel_codec
 An audio codec named dmel_codec
 
+# Environment build
+1. conda create -n dmel_codec python=3.10
+2. git clone https://github.com/wuzhiyue111/dmel_codec.git
+3. cd dmel_codec
+4. pip install -e .
+
+# Run experiment
+
+
 ```bibtex
 @article{bai2024dmel,
   title={dmel: Speech tokenization made simple},
@@ -22,5 +31,3 @@ An audio codec named dmel_codec
 ## Acknowledgements
 - [fish-speech](https://github.com/fishaudio/fish-speech)
 - [bigvgan](https://github.com/NVIDIA/BigVGAN)
-
-
