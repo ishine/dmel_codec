@@ -4,7 +4,6 @@ import logging
 import sys
 from pathlib import Path
 from typing import Any, Callable
-
 import lightning as L
 import torch
 import torch.nn.functional as F
@@ -12,14 +11,13 @@ from einops import rearrange
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from matplotlib import pyplot as plt
 from torch import nn
-from utils.spectrogram import LogMelSpectrogram
-
-from .modules.bigvgan.bigvgan import BigVGAN
-from .modules.discriminator import Discriminator
-from .modules.fsq import DownsampleFiniteScalarQuantize
-from .modules.wavenet import WaveNet
-from utils.utils import avg_with_mask, plot_mel, sequence_mask
-from utils.logger import RankedLogger
+from dmel_codec.utils.spectrogram import LogMelSpectrogram
+from dmel_codec.models.modules.bigvgan.bigvgan import BigVGAN
+from dmel_codec.models.modules.discriminator import Discriminator
+from dmel_codec.models.modules.fsq import DownsampleFiniteScalarQuantize
+from dmel_codec.models.modules.wavenet import WaveNet
+from dmel_codec.utils.utils import avg_with_mask, plot_mel, sequence_mask
+from dmel_codec.utils.logger import RankedLogger
 
 
 log = RankedLogger(__name__)

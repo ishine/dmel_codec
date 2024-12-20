@@ -7,10 +7,10 @@ import rootutils
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
 
-from utils.logger import RankedLogger
-from utils.print_config import print_config_tree
-from utils.utils import find_lastest_ckpt
-from utils.instantiators import instantiate_loggers
+from dmel_codec.utils.logger import RankedLogger
+from dmel_codec.utils.print_config import print_config_tree
+from dmel_codec.utils.utils import find_lastest_ckpt
+from dmel_codec.utils.instantiators import instantiate_loggers
 
 
 rootutils.setup_root(__file__, indicator=".dMel_chatMusic_root", pythonpath=True)

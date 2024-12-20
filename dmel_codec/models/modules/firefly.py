@@ -3,7 +3,6 @@
 from functools import partial
 from math import prod
 from typing import Callable
-
 import numpy as np
 import torch
 import torch.nn.functional as F
