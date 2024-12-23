@@ -21,6 +21,8 @@ setup(
         "scipy>=1.14.0",
         "soundfile==0.12.1",
         "vector-quantize-pytorch>=1.20.9",
+        "lhotse==1.29.0",
+        "lhotse[orjson]",
         
         # optional
         "tensorboard>=2.0.0",

@@ -30,3 +30,4 @@ asr-label*
 *.egg-info
 test*
 outputs/
+.conda/
