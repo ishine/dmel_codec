@@ -3,7 +3,7 @@ seed: 114514
 
 defaults:
   - _self_
-  - person: wzy
+  - person/wzy.yaml # 多级yaml调用，避免重复配置, 需要手动指定
 
 trainer:
   _target_: lightning.pytorch.Trainer
