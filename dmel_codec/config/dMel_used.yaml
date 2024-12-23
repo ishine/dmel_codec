@@ -27,24 +27,8 @@ dmel_groups: ??? # Must be a divisor of num_mels
 pad_length: 0
 
 data:
-  _target_: dmel_codec.datasets.VQGANDataModule
-  train_dataset:
-    _target_: dmel_codec.datasets.VQGANDataset
-    filelist: ??? # path for train filelist
-    sample_rate: ${sample_rate}
-    hop_length: ${hop_length}
-    slice_frames: 256
-
-  val_dataset:
-    _target_: datasets.VQGANDataset
-    filelist: ??? # path for val filelist
-    sample_rate: ${sample_rate}
-    hop_length: ${hop_length}
-    slice_frames: 512
-
-  num_workers: 60
-  batch_size: 120
-  val_batch_size: 8
+  _target_: dmel_codec.lhotse_tts_dataset.LhotseDataModule
+  
 
 model:
   _target_: dmel_codec.models.lit_modules.VQGAN
