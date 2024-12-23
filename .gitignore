@@ -28,4 +28,5 @@ asr-label*
 /example
 /faster_whisper
 /.gradio
-.egg-info
+*.egg-info
+test*
