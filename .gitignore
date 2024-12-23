@@ -29,3 +29,5 @@ asr-label*
 /faster_whisper
 /.gradio
 .egg-info
+.conda/
+*.egg-info
