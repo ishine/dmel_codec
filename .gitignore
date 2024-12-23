@@ -30,3 +30,4 @@ asr-label*
 /.gradio
 *.egg-info
 test*
+outputs/
