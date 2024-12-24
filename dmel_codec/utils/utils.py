@@ -8,6 +8,8 @@ log = RankedLogger(__name__, rank_zero_only=True)
 
 
 def find_lastest_ckpt(directory):
+    if directory is None:
+        return None
     ckpt_file = glob.glob(os.path.join(directory, "*.ckpt"))
 
     if not ckpt_file:

@@ -1,0 +1,52 @@
+concat_channels_dim: 700
+dmel_groups: 10
+
+data:
+  train_recordings_paths:
+  - /sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz
+  - /sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz
+  - /sdb/data1/lhotse/libritts/libritts_recordings_train-other-500.jsonl.gz
+  train_supervisions_paths:
+  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz
+  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz
+  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz
+  train_recording_prefix:
+  - /sdb/data1/speech/24kHz/LibriTTS
+  - /sdb/data1/speech/24kHz/LibriTTS
+  - /sdb/data1/speech/24kHz/LibriTTS
+  train_max_duration: 60.0 # dynamic batch size, seconds
+  train_num_workers: 8
+
+
+  val_recordings_paths:
+  - /sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz
+  - /sdb/data1/lhotse/libritts/libritts_recordings_dev-other.jsonl.gz
+  val_supervisions_paths:
+  - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz
+  - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-other.jsonl.gz
+  val_recording_prefix:
+  - /sdb/data1/speech/24kHz/LibriTTS
+  - /sdb/data1/speech/24kHz/LibriTTS
+  val_max_duration: 4 # dynamic batch size, seconds
+  val_num_workers: 2
+
+model:
+  encoder:
+    input_channels: 10
+    residual_channels: 70
+
+  vocoder:
+    ckpt_path: null
+    h_path: null
+
+callbacks:
+  model_checkpoint:
+    dirpath: /data0/questar/users/wuzhiyue/ckpt
+    filename: '{epoch:03d}-{step:06d}_20hz'
+
+tensorboard_logger:
+  save_dir: /home/wuzhiyue/CodecLLM-master/dmel_codec/tb_logs
+  name: dmel_codec_20hz
+
+trainer:
+  devices: -1 # means all gpus

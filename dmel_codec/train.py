@@ -14,6 +14,7 @@ from dmel_codec.utils.instantiators import instantiate_loggers
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
+
 def get_config():
     try:
         base_path = dmel_codec.__path__[0]
@@ -27,8 +28,9 @@ def get_config():
         logger.error(f"Error loading config: {base_config.defaults[1:]=}, {e=}")
         raise e
 
+
 def main(config: DictConfig) -> None:
-    
+
     print_config_tree(config)
 
     pl.seed_everything(config.seed)
@@ -54,7 +56,7 @@ def main(config: DictConfig) -> None:
         config.trainer, callbacks=callbacks, logger=loggers, _convert_="partial"
     )
 
-    latest_ckpt_path = find_lastest_ckpt(config.codec_ckpt_dir)
+    latest_ckpt_path = find_lastest_ckpt(config.get("codec_ckpt_dir", None))
     logger.info(f"start_training, latest_ckpt_path: {latest_ckpt_path}")
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=latest_ckpt_path)
     logger.info("training_finished")

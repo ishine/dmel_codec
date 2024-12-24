@@ -31,100 +31,246 @@ class LhotseTTSDataset(Dataset):
 class LhotseDataModule(LightningDataModule):
     def __init__(
         self,
-        train_recordings_paths: Sequence[str],
-        val_recordings_paths: Sequence[str],
-        test_recordings_paths: Sequence[str],
-        train_supervisions_paths: Sequence[str],
-        val_supervisions_paths: Sequence[str],
-        test_supervisions_paths: Sequence[str],
-        output_dir: str = "./data/libriTTS",
-        json_prefix: str = "",
-        recording_prefix: str = None,
-        max_duration: float = 60.0,
+        train_recordings_paths: Sequence[str] | None = None,
+        train_supervisions_paths: Sequence[str] | None = None,
+
+        val_recordings_paths: Sequence[str] | None = None,
+        val_supervisions_paths: Sequence[str] | None = None,
+
+        test_recordings_paths: Sequence[str] | None = None,
+        test_supervisions_paths: Sequence[str] | None = None,
+
+        train_cuts_paths: Sequence[str] | None = None,
+        val_cuts_paths: Sequence[str] | None = None,
+        test_cuts_paths: Sequence[str] | None = None,
+
+        # prefix for recording and supervision, Optional
+        train_prefix: list[str] | None = None,
+        val_prefix: list[str] | None = None,
+        test_prefix: list[str] | None = None,
+
+        train_max_duration: float = 60.0,  # dynamic batch size, seconds
         train_num_workers: int = 0,
+
+        val_max_duration: float = 60.0,  # dynamic batch size, seconds
         val_num_workers: int = 0,
-        test_num_workers: int = 0,
+
+        # training stage just active train_dataloader and val_dataloader, None for not active
+        test_max_duration: float | None = None,  # dynamic batch size, seconds
+        test_num_workers: int | None = None,
     ):
         super().__init__()
 
         self.save_hyperparameters(logger=False)
+        
+        self.hparams_check()
 
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
 
+    def hparams_check(self):
+        # train
+        # train_recordings_paths and train_supervisions_paths and train_cuts_paths
+        if self.hparams.train_recordings_paths is not None:
+            assert len(self.hparams.train_recordings_paths) == len(self.hparams.train_supervisions_paths), "train_recordings_paths and train_supervisions_paths must have the same length"
+
+        if self.hparams.train_recordings_paths is None:
+            assert self.hparams.train_cuts_paths is not None and self.hparams.train_supervisions_paths is None, "train_cuts_paths must be provided and train_supervisions_paths must be None if train_recordings_paths is None"
+            
+        if self.hparams.train_cuts_paths is None:
+            assert self.hparams.train_recordings_paths is not None, "train_recordings_paths must be provided if train_cuts_paths is None"
+
+        # train_recordings_paths and train_cuts_paths and train_recording_prefix
+        if self.hparams.train_recordings_paths is not None and self.hparams.train_cuts_paths is None:
+            assert len(self.hparams.train_recordings_paths) == len(self.hparams.train_prefix), "train_recordings_paths and train_prefix must have the same length if train_cuts_paths is None"
+        elif self.hparams.train_cuts_paths is not None and self.hparams.train_recordings_paths is not None:
+            assert (len(self.hparams.train_cuts_paths) + len(self.hparams.train_recordings_paths)) == len(self.hparams.train_prefix), "train_cuts_paths + train_recordings_paths == train_prefix"
+            
+        # train_prefix == None
+        if self.hparams.train_prefix is None:
+            log.info(f"train_prefix is None, pls check your train_recordings source is absolute path")
+
+        # val, same as train
+        # val_recordings_paths and val_supervisions_paths
+        if self.hparams.val_recordings_paths is not None:
+            assert len(self.hparams.val_recordings_paths) == len(self.hparams.val_supervisions_paths), "val_recordings_paths and val_supervisions_paths must have the same length"
+
+        if self.hparams.val_recordings_paths is None:
+            assert self.hparams.val_cuts_paths is not None and self.hparams.val_supervisions_paths is None, "val_cuts_paths must be provided and val_supervisions_paths must be None if val_recordings_paths is None"
+            
+        if self.hparams.val_cuts_paths is None:
+            assert self.hparams.val_recordings_paths is not None, "val_recordings_paths must be provided if val_cuts_paths is None"
+
+        # val_recordings_paths and val_cuts_paths and val_recording_prefix
+        if self.hparams.val_recordings_paths is not None and self.hparams.val_cuts_paths is None:
+            assert len(self.hparams.val_recordings_paths) == len(self.hparams.val_prefix), "val_recordings_paths and val_prefix must have the same length if val_cuts_paths is None"
+        elif self.hparams.val_cuts_paths is not None and self.hparams.val_recordings_paths is not None:
+            assert (len(self.hparams.val_cuts_paths) + len(self.hparams.val_recordings_paths)) == len(self.hparams.val_prefix), "val_cuts_paths + val_recordings_paths == val_prefix"
+            
+        # val_prefix == None
+        if self.hparams.val_prefix is None:
+            log.info(f"val_prefix is None, pls check your val_recordings source is absolute path")
+        
+        # test, same as train
+        # test_recordings_paths and test_supervisions_paths
+        if self.hparams.test_recordings_paths is not None:
+            assert len(self.hparams.test_recordings_paths) == len(self.hparams.test_supervisions_paths), "test_recordings_paths and test_supervisions_paths must have the same length"
+
+        if self.hparams.test_recordings_paths is None:
+            assert self.hparams.test_cuts_paths is not None and self.hparams.test_supervisions_paths is None, "test_cuts_paths must be provided and test_supervisions_paths must be None if test_recordings_paths is None"
+            
+        if self.hparams.test_cuts_paths is None:
+            assert self.hparams.test_recordings_paths is not None, "test_recordings_paths must be provided if test_cuts_paths is None"
+        
+        # test_recordings_paths and test_cuts_paths and test_recording_prefix
+        if self.hparams.test_recordings_paths is not None and self.hparams.test_cuts_paths is None:
+            assert len(self.hparams.test_recordings_paths) == len(self.hparams.test_recording_prefix), "test_recordings_paths and test_recording_prefix must have the same length if test_cuts_paths is None"
+        elif self.hparams.test_cuts_paths is not None and self.hparams.test_recordings_paths is not None:
+            assert (len(self.hparams.test_cuts_paths) + len(self.hparams.test_recordings_paths)) == len(self.hparams.test_prefix), "test_cuts_paths + test_recordings_paths == test_prefix"
+            
+        # test_prefix == None
+        if self.hparams.test_prefix is None:
+            log.info(f"test_prefix is None, pls check your test_recordings source is absolute path")
+
     def setup(self, stage: str):
         if stage == "fit":
-            self.train_recordings = RecordingSet()
-            for path in self.hparams.train_recordings_paths:
-                self.train_recordings += RecordingSet.from_dicts(load_jsonl(path))
-            self.train_supervisions = SupervisionSet()
-            for path in self.hparams.train_supervisions_paths:
-                self.train_supervisions += SupervisionSet.from_dicts(load_jsonl(path))
-            if self.hparams.recording_prefix is not None:
-                self.train_recordings = self.train_recordings.with_path_prefix(self.hparams.recording_prefix)
-            log.info(f"train_recordings: {self.train_recordings}")
-            log.info(f"train_supervisions: {self.train_supervisions}")
+            train_recordings_length = len(self.hparams.train_recordings_paths) if self.hparams.train_recordings_paths is not None else 0
+            train_cuts_length = len(self.hparams.train_cuts_paths) if self.hparams.train_cuts_paths is not None else 0
+            self.train_cuts = CutSet()
+            if train_recordings_length != 0:
+                self.train_recordings = RecordingSet()
+                self.train_supervisions = SupervisionSet()
+                for idx, path in enumerate(self.hparams.train_recordings_paths):
+                    self.tmp_recordings = RecordingSet.from_jsonl_lazy(path)
+                    if self.hparams.train_prefix is not None:
+                        self.train_recordings += self.tmp_recordings.with_path_prefix(
+                            self.hparams.train_prefix[idx]
+                        )
+                    else:
+                        self.train_recordings += self.tmp_recordings
+
+                for path in self.hparams.train_supervisions_paths:
+                    self.train_supervisions += SupervisionSet.from_jsonl_lazy(path)
+
+                log.info(f"train_recordings: {self.train_recordings}")
+                log.info(f"train_supervisions: {self.train_supervisions}")
+
+                self.train_cuts += CutSet.from_manifests(
+                    recordings=self.train_recordings, supervisions=self.train_supervisions
+                )
+
+            if train_cuts_length != 0:
+                self.train_cuts_tmp = CutSet()
+                for idx, path in enumerate(self.hparams.train_cuts_paths):
+                    self.tmp_cuts = CutSet.from_jsonl_lazy(path)
+                    self.train_cuts_tmp += self.tmp_cuts.with_recording_path_prefix(
+                        self.hparams.train_prefix[idx + train_recordings_length]
+                    )
+                self.train_cuts += self.train_cuts_tmp
             
-            self.train_cuts = CutSet.from_manifests(recordings=self.train_recordings, supervisions=self.train_supervisions)
             log.info(f"train_cuts: {self.train_cuts}")
-            
+
             self.train_dataset = LhotseTTSDataset()
             log.info(f"train_dataset: {self.train_dataset}")
-            
+
             self.train_sampler = DynamicBucketingSampler(
                 self.train_cuts,
-                max_duration=self.hparams.max_duration,
+                max_duration=self.hparams.train_max_duration,
                 shuffle=True,
                 drop_last=False,
             )
             log.info(f"train_sampler: {self.train_sampler}")
         elif stage == "validate":
-            self.val_recordings = RecordingSet()
-            for path in self.hparams.val_recordings_paths:
-                self.val_recordings += RecordingSet.from_dicts(load_jsonl(path))
-            self.val_supervisions = SupervisionSet()
-            for path in self.hparams.val_supervisions_paths:
-                self.val_supervisions += SupervisionSet.from_dicts(load_jsonl(path))
-            if self.hparams.recording_prefix is not None:
-                self.val_recordings = self.val_recordings.with_path_prefix(self.hparams.recording_prefix)
-            log.info(f"val_recordings: {self.val_recordings}")
-            log.info(f"val_supervisions: {self.val_supervisions}")
-            
-            self.val_cuts = CutSet.from_manifests(recordings=self.val_recordings, supervisions=self.val_supervisions)
-            log.info(f"val_cuts: {self.val_cuts}")
-            
+            val_recordings_length = len(self.hparams.val_recordings_paths) if self.hparams.val_recordings_paths is not None else 0
+            val_cuts_length = len(self.hparams.val_cuts_paths) if self.hparams.val_cuts_paths is not None else 0
+            self.val_cuts = CutSet()
+            if val_recordings_length != 0:
+                self.val_recordings = RecordingSet()
+                self.val_supervisions = SupervisionSet()
+                for idx, path in enumerate(self.hparams.val_recordings_paths):
+                    self.tmp_recordings = RecordingSet.from_jsonl_lazy(path)
+                    
+                    self.val_recordings += self.tmp_recordings.with_path_prefix(
+                        self.hparams.val_prefix[idx]
+                    )
+
+                for path in self.hparams.val_supervisions_paths:
+                    self.val_supervisions += SupervisionSet.from_jsonl_lazy(path)
+
+                log.info(f"val_recordings: {self.val_recordings}")
+                log.info(f"val_supervisions: {self.val_supervisions}")
+
+                self.val_cuts += CutSet.from_manifests(
+                    recordings=self.val_recordings, supervisions=self.val_supervisions
+                )
+
+            if val_cuts_length != 0:
+                self.val_cuts_tmp = CutSet()
+                for idx, path in enumerate(self.hparams.val_cuts_paths):
+                    self.tmp_cuts = CutSet.from_jsonl_lazy(path)
+                    if self.hparams.val_prefix is not None:
+                        self.val_cuts_tmp += self.tmp_cuts.with_recording_path_prefix(
+                            self.hparams.val_prefix[idx + val_recordings_length]
+                        )
+                    else:
+                        self.val_cuts_tmp += self.tmp_cuts
+                self.val_cuts += self.val_cuts_tmp
+
             self.val_dataset = LhotseTTSDataset()
             log.info(f"val_dataset: {self.val_dataset}")
-            
+
             self.val_sampler = DynamicBucketingSampler(
                 self.val_cuts,
-                max_duration=self.hparams.max_duration,
+                max_duration=self.hparams.val_max_duration,
                 shuffle=False,
                 drop_last=False,
             )
             log.info(f"val_sampler: {self.val_sampler}")
         elif stage == "test":
-            self.test_recordings = RecordingSet()
-            for path in self.hparams.test_recordings_paths:
-                self.test_recordings += RecordingSet.from_dicts(load_jsonl(path))
-            self.test_supervisions = SupervisionSet()
-            for path in self.hparams.test_supervisions_paths:
-                self.test_supervisions += SupervisionSet.from_dicts(load_jsonl(path))
-            if self.hparams.recording_prefix is not None:
-                self.test_recordings = self.test_recordings.with_path_prefix(self.hparams.recording_prefix)
-            log.info(f"test_recordings: {self.test_recordings}")
-            log.info(f"test_supervisions: {self.test_supervisions}")
-            
-            self.test_cuts = CutSet.from_manifests(recordings=self.test_recordings, supervisions=self.test_supervisions)
-            log.info(f"test_cuts: {self.test_cuts}")
+            test_recordings_length = len(self.hparams.test_recordings_paths) if self.hparams.test_recordings_paths is not None else 0
+            test_cuts_length = len(self.hparams.test_cuts_paths) if self.hparams.test_cuts_paths is not None else 0
+            self.test_cuts = CutSet()
+            if test_recordings_length != 0:
+                self.test_recordings = RecordingSet()
+                self.test_supervisions = SupervisionSet()
+                for idx, path in enumerate(self.hparams.test_recordings_paths):
+                    self.tmp_recordings = RecordingSet.from_jsonl_lazy(path)
+                    if self.hparams.test_prefix is not None:
+                        self.test_recordings += self.tmp_recordings.with_path_prefix(
+                            self.hparams.test_prefix[idx]
+                        )
+                    else:
+                        self.test_recordings += self.tmp_recordings
+
+                for path in self.hparams.test_supervisions_paths:
+                    self.test_supervisions += SupervisionSet.from_jsonl_lazy(path)
+
+                log.info(f"train_recordings: {self.train_recordings}")
+                log.info(f"train_supervisions: {self.train_supervisions}")
+
+                self.test_cuts += CutSet.from_manifests(
+                    recordings=self.test_recordings, supervisions=self.test_supervisions
+                )
+
+            if test_cuts_length != 0:
+                self.test_cuts_tmp = CutSet()
+                for idx, path in enumerate(self.hparams.test_cuts_paths):
+                    self.tmp_cuts = CutSet.from_jsonl_lazy(path)
+                    if self.hparams.test_prefix is not None:
+                        self.test_cuts_tmp += self.tmp_cuts.with_recording_path_prefix(
+                            self.hparams.test_prefix[idx + test_recordings_length]
+                        )
+                    else:
+                        self.test_cuts_tmp += self.tmp_cuts
+                self.test_cuts += self.test_cuts_tmp
 
             self.test_dataset = LhotseTTSDataset()
             log.info(f"test_dataset: {self.test_dataset}")
-            
+
             self.test_sampler = DynamicBucketingSampler(
                 self.test_cuts,
-                max_duration=self.hparams.max_duration,
+                max_duration=self.hparams.test_max_duration,
                 shuffle=False,
                 drop_last=False,
             )
@@ -145,7 +291,7 @@ class LhotseDataModule(LightningDataModule):
             num_workers=self.hparams.val_num_workers,
             pin_memory=False,
         )
-    
+
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,
@@ -157,22 +303,54 @@ class LhotseDataModule(LightningDataModule):
 
 if __name__ == "__main__":
     # test
-
     data_module = LhotseDataModule(
-        train_recordings_paths=["/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_recordings_train-clean-100.jsonl.gz",
-                                "/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_recordings_train-clean-360.jsonl.gz"],
-        val_recordings_paths=["/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_recordings_dev-clean.jsonl.gz"],
-        test_recordings_paths=["/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_recordings_test-clean.jsonl.gz"],
-        train_supervisions_paths=["/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_supervisions_train-clean-100.jsonl.gz",
-                                "/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_supervisions_train-clean-360.jsonl.gz"],
-        val_supervisions_paths=["/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_supervisions_dev-clean.jsonl.gz"],
-        test_supervisions_paths=["/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS/libritts_supervisions_test-clean.jsonl.gz"],
-        output_dir="/home/4T/zhouhao/dMelChatMusic/chat_music/data/libriTTS",
-        json_prefix="libritts",
-        recording_prefix="magia",
-        max_duration=60.0,
+        train_recordings_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
+            "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
+        ],
+        val_recordings_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz"
+        ],
+        test_recordings_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_recordings_test-clean.jsonl.gz"
+        ],
+        train_supervisions_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
+        ],
+        val_supervisions_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz"
+        ],
+        test_supervisions_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_test-clean.jsonl.gz"
+        ],
+        train_cuts_paths=['/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz', '/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz'],
+        val_cuts_paths=['/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz', '/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz'],
+        test_cuts_paths=['/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz', '/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz'],
+
+        train_prefix=[ # First specify the prefix for recordings, then specify the prefix for cuts
+            "/sdb/data1/speech/24kHz/LibriTTS",
+            "/sdb/data1/speech/24kHz/LibriTTS",
+            "/sdb/data1/speech/24kHz/Emilia",
+            "/sdb/data1/speech/24kHz/Emilia",
+        ],
+        val_prefix=[ # First specify the prefix for recordings, then specify the prefix for cuts
+            "/sdb/data1/speech/24kHz/LibriTTS",
+            "/sdb/data1/speech/24kHz/Emilia",
+            "/sdb/data1/speech/24kHz/Emilia",
+        ],
+        test_prefix=[ # First specify the prefix for recordings, then specify the prefix for cuts
+            "/sdb/data1/speech/24kHz/LibriTTS",
+            "/sdb/data1/speech/24kHz/Emilia",
+            "/sdb/data1/speech/24kHz/Emilia",
+        ],
+
+        train_max_duration=60.0,
         train_num_workers=4,
+        val_max_duration=60.0,
         val_num_workers=4,
+        test_max_duration=60.0,
+        test_num_workers=4,
     )
 
     data_module.setup("fit")
@@ -202,7 +380,7 @@ if __name__ == "__main__":
         cnt += 1
         if cnt > 10:
             break
-    
+
     data_module.setup("test")
     test_loader = data_module.test_dataloader()
     log.info(f"test_loader: {test_loader}")
