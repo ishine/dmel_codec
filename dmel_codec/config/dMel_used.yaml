@@ -3,13 +3,13 @@ seed: 114514
 
 defaults:
   - _self_
-  - person/wzy.yaml # 多级yaml调用，避免重复配置, 需要手动指定
+  - person/your_special_config.yaml # 多级yaml调用，避免重复配置, 需要手动指定
 
 trainer:
   _target_: lightning.pytorch.Trainer
   accelerator: gpu
   devices:
-  - 0
+  - ??? # gpu id
   precision: 32
   max_steps: 1000000
   val_check_interval: 2000
@@ -26,8 +26,26 @@ concat_channels_dim: ??? # larger than dmel_groups, such as (7 * dmel_groups) if
 dmel_groups: ??? # Must be a divisor of num_mels
 pad_length: 0
 
-data:
+data: # training stage just active train_dataloader and val_dataloader
   _target_: dmel_codec.lhotse_tts_dataset.LhotseDataModule
+  train_recordings_paths:
+  - ??? # path for training recordings
+  train_supervisions_paths:
+  - ??? # path for training supervisions
+  train_recording_prefix:
+  - ??? # path for training recordings prefix, must be same as val_recording_prefix or None
+  train_max_duration: 60.0 # dynamic batch size, seconds
+  train_num_workers: 8
+
+
+  val_recordings_paths:
+  - ??? # path for validation recordings
+  val_supervisions_paths:
+  - ??? # path for validation supervisions
+  val_recording_prefix:
+  - ??? # path for validation recordings prefix, must be same as train_recording_prefix or None
+  val_max_duration: 4 # dynamic batch size, seconds
+  val_num_workers: 2
   
 
 model:
