@@ -10,12 +10,13 @@ data:
   - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz
   - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz
   - /sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz
-  train_recording_prefix:
+  train_prefix:
   - /sdb/data1/speech/24kHz/LibriTTS
   - /sdb/data1/speech/24kHz/LibriTTS
   - /sdb/data1/speech/24kHz/LibriTTS
   train_max_duration: 60.0 # dynamic batch size, seconds
   train_num_workers: 8
+  train_cuts_paths: null
 
 
   val_recordings_paths:
@@ -24,11 +25,13 @@ data:
   val_supervisions_paths:
   - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz
   - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-other.jsonl.gz
-  val_recording_prefix:
+  val_prefix:
   - /sdb/data1/speech/24kHz/LibriTTS
   - /sdb/data1/speech/24kHz/LibriTTS
   val_max_duration: 4 # dynamic batch size, seconds
   val_num_workers: 2
+  val_cuts_paths: null
+  val_max_samples: 128 # just validate 128 samples
 
 model:
   encoder:
@@ -36,17 +39,22 @@ model:
     residual_channels: 70
 
   vocoder:
-    ckpt_path: null
-    h_path: null
+    ckpt_path: /home/wzy/projects/bigvgan_v2_24khz_100band_256x/bigvgan_generator.pt
+    h_path: /home/wzy/projects/bigvgan_v2_24khz_100band_256x/config.json
 
 callbacks:
   model_checkpoint:
-    dirpath: /data0/questar/users/wuzhiyue/ckpt
+    dirpath: /home/wuzhiyue/dmel_codec/ckpt/dmel_codec
     filename: '{epoch:03d}-{step:06d}_20hz'
 
 tensorboard_logger:
-  save_dir: /home/wuzhiyue/CodecLLM-master/dmel_codec/tb_logs
+  _target_: lightning.pytorch.loggers.TensorBoardLogger
+  save_dir: /home/wzy/projects/dmel_codec/tb_logs
   name: dmel_codec_20hz
+  log_graph: true
 
 trainer:
-  devices: -1 # means all gpus
+  accelerator: cpu
+  precision: 32
+  devices: 1
+  
