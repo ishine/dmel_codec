@@ -64,6 +64,7 @@ model:
   quanlity_linear: ${concat_channels_dim}
   dmel_groups: ${dmel_groups}
   dtype: float32
+  accumulate_grad: 2
 
   encoder:
     _target_: dmel_codec.models.modules.wavenet.WaveNet
@@ -73,7 +74,7 @@ model:
     dilation_cycle: 4
 
   quantizer:
-    _target_: dmel_codec.models.modules.fsq.DownsampleFiniteScalarQuantize
+    _target_: dmel_codec.models.modules.dowmsample_fsq.DownsampleFiniteScalarQuantize
     input_dim: ${concat_channels_dim}
     n_codebooks: 1
     n_groups: ${dmel_groups}

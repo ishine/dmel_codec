@@ -23,7 +23,9 @@ class LhotseTTSDataset(Dataset):
 
         audio, audio_lens = collate_audio(cuts) # audio: (channel, audio_length)
         text = [cut.supervisions[0].text for cut in cuts]
+        # audio_file = [cut.recording.id for cut in cuts]
 
+        # return {"text": text, "audios": audio, "audio_lengths": audio_lens, "audio_file": audio_file}
         return {"text": text, "audios": audio, "audio_lengths": audio_lens}
 
 
@@ -58,7 +60,9 @@ class LhotseDataModule(LightningDataModule):
         # training stage just active train_dataloader and val_dataloader, None for not active
         test_max_duration: float | None = None,  # dynamic batch size, seconds
         test_num_workers: int | None = None,
-        test_max_samples: int | None = None
+        test_max_samples: int | None = None,
+        world_size: int = 1,
+        rank: int = 0,
     ):
         super().__init__()
 
@@ -198,6 +202,7 @@ class LhotseDataModule(LightningDataModule):
             max_duration=self.hparams.train_max_duration,
             shuffle=True,
             drop_last=False,
+            world_size=self.hparams.world_size,
         )
         log.info(f"train_sampler: {self.train_sampler}")
 
@@ -247,6 +252,7 @@ class LhotseDataModule(LightningDataModule):
             max_duration=self.hparams.val_max_duration,
             shuffle=False,
             drop_last=False,
+            world_size=self.hparams.world_size,
         )
         log.info(f"val_sampler: {self.val_sampler}")
 
