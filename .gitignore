@@ -31,3 +31,4 @@ asr-label*
 test*
 outputs/
 .conda/
+tb_logs/

@@ -42,7 +42,10 @@ def plot_mel(data, titles=None):
 
     return fig
 
-def sequence_mask(length, max_length=None):
+def sequence_mask(length: torch.Tensor, max_length: int | None = None):
+    # length: (batch_size, ) or (1, batch_size)
+    if length.ndim == 2:
+        length = length.squeeze(0)
     if max_length is None:
         max_length = length.max()
     x = torch.arange(max_length, dtype=length.dtype, device=length.device)

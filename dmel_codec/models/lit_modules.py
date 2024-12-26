@@ -49,7 +49,10 @@ class VQGAN(L.LightningModule):
         super().__init__()
         # torch.bfloat16 for str "bfloat16"
         log.info(f"dtype: {dtype}")
-        self.encode_dtype = dtype if isinstance(dtype, torch.dtype) else eval(dtype)
+        if isinstance(dtype, str):
+            self.encode_dtype = getattr(torch, dtype)
+        else:
+            self.encode_dtype = dtype
         log.info(f"VQGAN Using dtype: {self.encode_dtype}")
 
         # Model parameters
@@ -155,20 +158,21 @@ class VQGAN(L.LightningModule):
         optim_g, optim_d = self.optimizers()
 
         audios, audio_lengths = batch["audios"], batch["audio_lengths"]
-        batch_size = audios.shape[0]
+        # audios: (channel, batch_size, audio_length)
+        audios = audios.transpose(0, 1) # audios: (batch_size, channel, audio_length)
 
         audios = audios.float()
-        audios = audios[:, None, :]
+
 
         with torch.no_grad():
-            encoded_mels = self.encode_mel_transform(audios)
+            encode_mels = self.encode_mel_transform(audios)
             gt_mels = self.gt_mel_transform(audios)
             quality = ((gt_mels.mean(-1) > -8).sum(-1) - 90) / 10
             quality = quality.unsqueeze(-1)
 
         mel_lengths = audio_lengths // self.gt_mel_transform.hop_length
         mel_masks = sequence_mask(mel_lengths, gt_mels.shape[2])
-        mel_masks_float_conv = mel_masks[:, None, :].float()
+        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype)
         gt_mels = gt_mels * mel_masks_float_conv
 
         # Encode
@@ -176,11 +180,11 @@ class VQGAN(L.LightningModule):
             dMel_masks_float_conv = self.expand_mask(mel_masks_float_conv)
             # encoded_dMels = rearrange(encoded_mels, "b (g f) t -> (b g) f t", g=self.dmel_groups) # can not work
 
-            batch_size, num_mels, time_size = encoded_mels.shape
-            encoded_dMels = encoded_mels.contiguous().view(batch_size * self.dmel_groups, num_mels // self.dmel_groups, time_size)
+            batch_size, num_mels, time_size = encode_mels.shape
+            encode_dMels = encode_mels.contiguous().view(batch_size * self.dmel_groups, num_mels // self.dmel_groups, time_size)
 
-            encoded_dMels = encoded_dMels * dMel_masks_float_conv
-            encoded_features = self.encoder(encoded_dMels) * dMel_masks_float_conv
+            encode_dMels = encode_dMels * dMel_masks_float_conv
+            encoded_features = self.encoder(encode_dMels) * dMel_masks_float_conv
 
         else:
             encoded_mels = encoded_mels * mel_masks_float_conv
@@ -320,17 +324,18 @@ class VQGAN(L.LightningModule):
 
     def validation_step(self, batch: Any, batch_idx: int):
         audios, audio_lengths = batch["audios"], batch["audio_lengths"]
+        # audios: (channel, batch_size, audio_length)
+        audios = audios.transpose(0, 1) # audios: (batch_size, channel, audio_length)
 
         audios = audios.float()
         batch_size = audios.shape[0]
-        audios = audios[:, None, :]
 
         encoded_mels = self.encode_mel_transform(audios)
         gt_mels = self.gt_mel_transform(audios)
 
         mel_lengths = audio_lengths // self.gt_mel_transform.hop_length
         mel_masks = sequence_mask(mel_lengths, gt_mels.shape[2])
-        mel_masks_float_conv = mel_masks[:, None, :].float()
+        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype)
         gt_mels = gt_mels * mel_masks_float_conv
 
         # Encode

@@ -21,10 +21,7 @@ def print_config_tree(
         "data",
         "model",
         "callbacks",
-        "logger",
         "trainer",
-        "paths",
-        "extras",
     ),
     resolve: bool = False,
     save_to_file: bool = False,
@@ -33,7 +30,7 @@ def print_config_tree(
 
     :param cfg: A DictConfig composed by Hydra.
     :param print_order: Determines in what order config components are printed. Default is ``("data", "model",
-    "callbacks", "logger", "trainer", "paths", "extras")``.
+    "callbacks", "trainer")``.
     :param resolve: Whether to resolve reference fields of DictConfig. Default is ``False``.
     :param save_to_file: Whether to export config to the hydra output folder. Default is ``False``.
     """
