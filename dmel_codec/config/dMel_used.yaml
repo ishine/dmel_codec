@@ -67,7 +67,7 @@ model:
     dilation_cycle: 4
 
   quantizer:
-    _target_: dmel_codec.models.modules.fsq.DownsampleFiniteScalarQuantize
+    _target_: dmel_codec.models.modules.dowmsample_fsq.DownsampleFiniteScalarQuantize
     input_dim: ${concat_channels_dim}
     n_codebooks: 1
     n_groups: ${dmel_groups}

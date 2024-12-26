@@ -14,7 +14,7 @@ from torch import nn
 from dmel_codec.utils.spectrogram import LogMelSpectrogram
 from dmel_codec.models.modules.bigvgan.bigvgan import BigVGAN
 from dmel_codec.models.modules.discriminator import Discriminator
-from dmel_codec.models.modules.fsq import DownsampleFiniteScalarQuantize
+from dmel_codec.models.modules.dowmsample_fsq import DownsampleFiniteScalarQuantize
 from dmel_codec.models.modules.wavenet import WaveNet
 from dmel_codec.utils.utils import avg_with_mask, plot_mel, sequence_mask
 from dmel_codec.utils.logger import RankedLogger
@@ -45,6 +45,7 @@ class VQGAN(L.LightningModule):
         dmel_groups: int = 0,
         quanlity_linear: int = 768,
         dtype: torch.dtype | str = "bfloat16",
+        accumulate_grad: int = 1,
     ):
         super().__init__()
         # torch.bfloat16 for str "bfloat16"
@@ -108,6 +109,7 @@ class VQGAN(L.LightningModule):
 
         self.automatic_optimization = False
         self.dmel_groups = dmel_groups
+        self.accumulate_grad = accumulate_grad
 
     def on_save_checkpoint(self, checkpoint):
         # Do not save vocoder
@@ -156,6 +158,7 @@ class VQGAN(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         optim_g, optim_d = self.optimizers()
+        scheduler_g, scheduler_d = self.lr_schedulers()
 
         audios, audio_lengths = batch["audios"], batch["audio_lengths"]
         # audios: (channel, batch_size, audio_length)
@@ -217,7 +220,7 @@ class VQGAN(L.LightningModule):
         loss_real = avg_with_mask((real_logits - 1) ** 2, d_mask)
         loss_fake = avg_with_mask(fake_logits**2, d_mask)
 
-        loss_d = loss_real + loss_fake
+        loss_d = (loss_real + loss_fake) / self.accumulate_grad # align with learning rate
 
         self.log(
             "train/discriminator/loss",
@@ -230,12 +233,15 @@ class VQGAN(L.LightningModule):
         )
 
         # Discriminator backward
-        optim_d.zero_grad()
         self.manual_backward(loss_d)
-        self.clip_gradients(
-            optim_d, gradient_clip_val=1000.0, gradient_clip_algorithm="norm"
-        )
-        optim_d.step()
+
+        if (batch_idx + 1) % self.accumulate_grad == 0:
+            self.clip_gradients(
+                optim_d, gradient_clip_val=1000.0, gradient_clip_algorithm="norm"
+            )
+            optim_d.step()
+            optim_d.zero_grad()
+            scheduler_d.step()
 
         # Mel Loss, applying l1, using a weighted sum
         mel_distance = (
@@ -265,7 +271,7 @@ class VQGAN(L.LightningModule):
             self.weight_vq * loss_vq
             + self.weight_mel * loss_mel
             + self.weight_adv * loss_adv
-        )
+        ) / self.accumulate_grad # align with learning rate
 
         # Log losses
         self.log(
@@ -306,21 +312,20 @@ class VQGAN(L.LightningModule):
         )
 
         # Generator backward
-        optim_g.zero_grad()
         self.manual_backward(loss)
-        self.clip_gradients(
-            optim_g, gradient_clip_val=1000.0, gradient_clip_algorithm="norm"
-        )
 
         # for name, params in self.named_parameters():
         #     if params.requires_grad == True and params.grad == None:
         #         print(f'{name} has no grad')
 
-        optim_g.step()
+        if (batch_idx + 1) % self.accumulate_grad == 0:
+            self.clip_gradients(
+                optim_g, gradient_clip_val=1000.0, gradient_clip_algorithm="norm"
+            )
+            optim_g.step()
+            optim_g.zero_grad()
+            scheduler_g.step()
 
-        scheduler_g, scheduler_d = self.lr_schedulers()
-        scheduler_g.step()
-        scheduler_d.step()
 
     def validation_step(self, batch: Any, batch_idx: int):
         audios, audio_lengths = batch["audios"], batch["audio_lengths"]
@@ -405,7 +410,7 @@ class VQGAN(L.LightningModule):
                 audios.cpu().float(),
                 gen_aux_audios.cpu().float(),
                 recon_audios.cpu().float(),
-                audio_lengths,
+                audio_lengths[0], # audio_lengths: (1, batch_size)
             )
         ):
             if idx > 0:

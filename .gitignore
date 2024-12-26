@@ -32,3 +32,4 @@ test*
 outputs/
 .conda/
 tb_logs/
+ckpt/

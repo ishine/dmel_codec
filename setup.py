@@ -23,6 +23,7 @@ setup(
         "vector-quantize-pytorch>=1.20.9",
         "lhotse==1.29.0",
         "lhotse[orjson]",
+        "x-transformers==1.43.4",
         
         # optional
         "tensorboard>=2.0.0",

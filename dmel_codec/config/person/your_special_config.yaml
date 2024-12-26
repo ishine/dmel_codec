@@ -33,7 +33,11 @@ data:
   val_cuts_paths: null
   val_max_samples: 128 # just validate 128 samples
 
+  world_size: 2 # same with GPU number
+
 model:
+  accumulate_grad: 2 # gradient accumulation steps
+
   encoder:
     input_channels: 10
     residual_channels: 70
@@ -44,7 +48,7 @@ model:
 
 callbacks:
   model_checkpoint:
-    dirpath: /home/wuzhiyue/dmel_codec/ckpt/dmel_codec
+    dirpath: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec
     filename: '{epoch:03d}-{step:06d}_20hz'
 
 tensorboard_logger:
@@ -54,7 +58,7 @@ tensorboard_logger:
   log_graph: true
 
 trainer:
-  accelerator: cpu
+  accelerator: gpu
   precision: 32
-  devices: 1
+  devices: [0, 1]
   
