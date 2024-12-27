@@ -5,7 +5,7 @@ An audio codec named dmel_codec
 1. conda create -n dmel_codec python=3.10
 2. git clone https://github.com/wuzhiyue111/dmel_codec.git
 3. cd dmel_codec
-4. pip install -e .
+4. bash mkenv.bash
 
 # Run experiment
 
