@@ -24,6 +24,11 @@ setup(
         "lhotse==1.29.0",
         "lhotse[orjson]",
         "x-transformers==1.43.4",
+        "jiwer==2.3.0",
+        "speechbrain==1.0.2",
+        "descript-audio-codec==1.0.0",
+        "transformers==4.47.1",
+        
         
         # optional
         "tensorboard>=2.0.0",

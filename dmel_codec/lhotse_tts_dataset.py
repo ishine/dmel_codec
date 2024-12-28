@@ -63,6 +63,7 @@ class LhotseDataModule(LightningDataModule):
         test_max_samples: int | None = None,
         world_size: int = 1,
         rank: int = 0,
+        stage: str = "fit", # for hparams check
     ):
         super().__init__()
 
@@ -75,14 +76,24 @@ class LhotseDataModule(LightningDataModule):
         self.test_dataset = None
 
     def hparams_check(self):
-        # train
+        if self.hparams.stage == "fit":
+            self._train_stage_hparams_check()
+            self._val_stage_hparams_check()
+
+        if self.hparams.stage == "validate":
+            self._val_stage_hparams_check()
+        
+        if self.hparams.stage == "test":
+            self._test_stage_hparams_check()
+
+    def _train_stage_hparams_check(self):
         # train_recordings_paths and train_supervisions_paths and train_cuts_paths
         if self.hparams.train_recordings_paths is not None:
             assert len(self.hparams.train_recordings_paths) == len(self.hparams.train_supervisions_paths), "train_recordings_paths and train_supervisions_paths must have the same length"
 
         if self.hparams.train_recordings_paths is None:
             assert self.hparams.train_cuts_paths is not None and self.hparams.train_supervisions_paths is None, "train_cuts_paths must be provided and train_supervisions_paths must be None if train_recordings_paths is None"
-            
+
         if self.hparams.train_cuts_paths is None:
             assert self.hparams.train_recordings_paths is not None, "train_recordings_paths must be provided if train_cuts_paths is None"
 
@@ -91,19 +102,19 @@ class LhotseDataModule(LightningDataModule):
             assert len(self.hparams.train_recordings_paths) == len(self.hparams.train_prefix), "train_recordings_paths and train_prefix must have the same length if train_cuts_paths is None"
         elif self.hparams.train_cuts_paths is not None and self.hparams.train_recordings_paths is not None:
             assert (len(self.hparams.train_cuts_paths) + len(self.hparams.train_recordings_paths)) == len(self.hparams.train_prefix), "train_cuts_paths + train_recordings_paths == train_prefix"
-            
+
         # train_prefix == None
         if self.hparams.train_prefix is None:
             log.info(f"train_prefix is None, pls check your train_recordings source is absolute path")
 
-        # val
+    def _val_stage_hparams_check(self):
         # val_recordings_paths and val_supervisions_paths
         if self.hparams.val_recordings_paths is not None:
             assert len(self.hparams.val_recordings_paths) == len(self.hparams.val_supervisions_paths), "val_recordings_paths and val_supervisions_paths must have the same length"
 
         if self.hparams.val_recordings_paths is None:
             assert self.hparams.val_cuts_paths is not None and self.hparams.val_supervisions_paths is None, "val_cuts_paths must be provided and val_supervisions_paths must be None if val_recordings_paths is None"
-            
+
         if self.hparams.val_cuts_paths is None:
             assert self.hparams.val_recordings_paths is not None, "val_recordings_paths must be provided if val_cuts_paths is None"
 
@@ -112,34 +123,34 @@ class LhotseDataModule(LightningDataModule):
             assert len(self.hparams.val_recordings_paths) == len(self.hparams.val_prefix), "val_recordings_paths and val_prefix must have the same length if val_cuts_paths is None"
         elif self.hparams.val_cuts_paths is not None and self.hparams.val_recordings_paths is not None:
             assert (len(self.hparams.val_cuts_paths) + len(self.hparams.val_recordings_paths)) == len(self.hparams.val_prefix), "val_cuts_paths + val_recordings_paths == val_prefix"
-            
+
         # val_prefix == None
         if self.hparams.val_prefix is None:
             log.info(f"val_prefix is None, pls check your val_recordings source is absolute path")
-        
+
         if self.hparams.val_max_samples is not None:
             log.info(f"validation stage just use {self.hparams.val_max_samples} samples")
         elif self.hparams.val_max_samples is None:
             log.info(f"validation stage use all samples")
-        
-        # test, can be None if in fit stage
+
+    def _test_stage_hparams_check(self):
         # test_recordings_paths and test_supervisions_paths
         if self.hparams.test_recordings_paths is not None:
             assert len(self.hparams.test_recordings_paths) == len(self.hparams.test_supervisions_paths), "test_recordings_paths and test_supervisions_paths must have the same length"
 
         if self.hparams.test_recordings_paths is None:
             assert self.hparams.test_supervisions_paths is None, "test_supervisions_paths must be None if test_recordings_paths is None"
-        
+
         # test_recordings_paths and test_cuts_paths and test_recording_prefix
         if self.hparams.test_recordings_paths is not None and self.hparams.test_cuts_paths is None:
             assert len(self.hparams.test_recordings_paths) == len(self.hparams.test_prefix), "test_recordings_paths and test_recording_prefix must have the same length if test_cuts_paths is None"
         elif self.hparams.test_cuts_paths is not None and self.hparams.test_recordings_paths is not None:
             assert (len(self.hparams.test_cuts_paths) + len(self.hparams.test_recordings_paths)) == len(self.hparams.test_prefix), "test_cuts_paths + test_recordings_paths == test_prefix"
-            
+
         # test_prefix == None
         if self.hparams.test_prefix is None and (self.hparams.test_recordings_paths is not None or self.hparams.test_cuts_paths is not None):
             log.info(f"test_prefix is None, pls check your test_recordings source is absolute path")
-            
+
         if self.hparams.test_max_samples is not None:
             log.info(f"test stage just use {self.hparams.test_max_samples} samples")
         elif self.hparams.test_max_samples is None:
