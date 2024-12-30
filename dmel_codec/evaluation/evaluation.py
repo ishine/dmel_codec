@@ -133,3 +133,7 @@ class Evaluation:
 
     # def get_visqol(self, rec_audio, g_audio):
     #     pass
+
+if __name__ == "__main__":
+    evaluation = Evaluation()
+    evaluation.evaluation()

@@ -61,3 +61,12 @@ def avg_with_mask(x, mask):
         mask = mask.expand_as(x)
 
     return (x * mask).sum() / mask.sum()
+
+def open_filelist(filelist_path):
+    audio_path_list = []
+    with open(filelist_path, 'r') as f:
+        filelist = f.readlines()
+        for file in filelist:
+            audio_path = file.strip()
+            audio_path_list.append(audio_path)
+    return audio_path_list
