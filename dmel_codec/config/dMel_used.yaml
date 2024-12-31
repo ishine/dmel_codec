@@ -153,6 +153,7 @@ callbacks:
     filename: ??? # format: '{epoch:03d}-{step:06d}_20hz' filename for saving ckpt
     save_top_k: 1
     verbose: true
+    save_last: true  # add this parameter to save the last epoch
 
   grad_norm_monitor:
     sub_module:

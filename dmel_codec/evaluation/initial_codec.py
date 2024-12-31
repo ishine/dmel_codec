@@ -87,7 +87,7 @@ class InitialCodec:
             indices, _ = self.codec._encode_frame(input_values = audios, num_quantizers=self.num_quantizers, padding_mask=None)
 
         else:
-            pass
+            raise NotImplementedError(f"Extract indices not implemented for {self.codec_name}")
 
         return indices, feature_lens
 
@@ -113,7 +113,7 @@ class InitialCodec:
             unquantized_features = self.codec.downsample(encoder_outputs)
 
         else:
-            pass
+            raise NotImplementedError(f"Extract latent unquantized not implemented for {self.codec_name}")
 
         return unquantized_features, mel_lengths
 
@@ -140,7 +140,7 @@ class InitialCodec:
             quantized_features = self.codec.quantizer.decode(indices)
 
         else:
-            pass
+            raise NotImplementedError(f"Extract latent quantized not implemented for {self.codec_name}")
 
         return quantized_features, mel_masks_float_conv
 
