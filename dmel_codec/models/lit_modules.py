@@ -335,7 +335,7 @@ class VQGAN(L.LightningModule):
         audios = audios.float()
         batch_size = audios.shape[0]
 
-        encoded_mels = self.encode_mel_transform(audios)
+        encode_mels = self.encode_mel_transform(audios)
         gt_mels = self.gt_mel_transform(audios)
 
         mel_lengths = audio_lengths // self.gt_mel_transform.hop_length
@@ -345,14 +345,18 @@ class VQGAN(L.LightningModule):
 
         # Encode
         if self.dmel_groups > 0:
-            expand_mel_masks_float_conv = self.expand_mask(mel_masks_float_conv)
-            encoded_dMels = rearrange(encoded_mels, "b (g f) t -> (b g) f t", g=self.dmel_groups)
-            encoded_dMels = encoded_dMels * expand_mel_masks_float_conv
-            encoded_features = self.encoder(encoded_dMels) * expand_mel_masks_float_conv
+            dMel_masks_float_conv = self.expand_mask(mel_masks_float_conv)
+            # encoded_dMels = rearrange(encode_mels, "b (g f) t -> (b g) f t", g=self.dmel_groups)
+
+            batch_size, num_mels, time_size = encode_mels.shape
+            encode_dMels = encode_mels.contiguous().view(batch_size * self.dmel_groups, num_mels // self.dmel_groups, time_size)
+
+            encode_dMels = encode_dMels * dMel_masks_float_conv
+            encoded_features = self.encoder(encode_dMels) * dMel_masks_float_conv
 
         else:
-            encoded_mels = encoded_mels * mel_masks_float_conv
-            encoded_features = self.encoder(encoded_mels) * mel_masks_float_conv
+            encode_mels = encode_mels * mel_masks_float_conv
+            encoded_features = self.encoder(encode_mels) * mel_masks_float_conv
 
         # Quantize
         vq_recon_features = self.quantizer(encoded_features).z * mel_masks_float_conv
@@ -456,46 +460,14 @@ class VQGAN(L.LightningModule):
 
             plt.close(image_mels)
 
-    def encode(self, audios, audio_lengths):
-        audios = audios.float()
+    def encode(self, audios, audio_lengths): # return indices and indices_lengths
+        encoded_features, mel_lengths = self.encode_unquantized(audios, audio_lengths)
+        indices, indices_lengths = self.get_indices_from_unquantized_features(encoded_features, mel_lengths)
 
-        mels = self.encode_mel_transform(audios)
-        mels = mels.to(self.encode_dtype)
+        return indices, indices_lengths
 
-        mel_lengths = audio_lengths // self.encode_mel_transform.hop_length
-
-        mel_masks = sequence_mask(mel_lengths, mels.shape[2])
-        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype)
-
-        # Encode
-        if self.dmel_groups > 0:
-            expand_mel_masks_float_conv = self.expand_mask(mel_masks_float_conv)
-            encoded_dMels = rearrange(
-                mels, "b (g f) t -> (b g) f t", g=self.dmel_groups
-            )
-            encoded_dMels = encoded_dMels * expand_mel_masks_float_conv
-            encoded_features = self.encoder(encoded_dMels) * expand_mel_masks_float_conv
-
-        else:
-            encoded_mels = mels * mel_masks_float_conv
-            encoded_features = self.encoder(encoded_mels) * mel_masks_float_conv
-
-        feature_lengths = mel_lengths // math.prod(self.quantizer.downsample_factor)
-
-        return self.quantizer.encode(encoded_features), feature_lengths
-
-    def decode(self, indices, feature_lengths, return_audios=False):
-        factor = math.prod(self.quantizer.downsample_factor)
-        mel_masks = sequence_mask(feature_lengths * factor, indices.shape[2] * factor)
-        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype)
-
-        z = self.quantizer.decode(indices) * mel_masks_float_conv
-        z = (
-            z
-            + self.quality_projection(torch.ones(z.shape[0], 1, device=z.device).to(self.encode_dtype) * 2)[
-                :, :, None
-            ]
-        )
+    def decode(self, indices, feature_lengths, return_audios=False): # return audios or mel
+        z, mel_masks_float_conv = self.get_quantized_features_from_indices(indices, feature_lengths)
 
         gen_mel = (
             self.decoder(
@@ -508,6 +480,53 @@ class VQGAN(L.LightningModule):
         if return_audios:
             if self.vocoder is None:
                 raise ValueError("Vocoder is not loaded")
-            return self.vocoder(gen_mel)
+            return self.vocoder(gen_mel), gen_mel
 
         return gen_mel
+    
+    def encode_unquantized(self, audios, audio_lengths): # return unquantized_features and mel_lengths
+        audios = audios.float()
+
+        mels = self.encode_mel_transform(audios) # mel must be float32
+        mels = mels.to(self.encode_dtype) 
+
+        mel_lengths = audio_lengths // self.encode_mel_transform.hop_length
+
+        mel_masks = sequence_mask(mel_lengths, mels.shape[2])
+        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype)
+
+        # Encode
+        if self.dmel_groups > 0:
+            dMel_masks_float_conv = self.expand_mask(mel_masks_float_conv).to(self.encode_dtype).to(mels.device)
+            # encoded_dMels = rearrange(
+            #     mels, "b (g f) t -> (b g) f t", g=self.dmel_groups
+            # )
+            batch_size, num_mels, time_size = mels.shape
+            encoded_dMels = mels.contiguous().view(batch_size * self.dmel_groups, num_mels // self.dmel_groups, time_size)
+
+            encoded_dMels = encoded_dMels * dMel_masks_float_conv
+            encoded_features = self.encoder(encoded_dMels) * dMel_masks_float_conv
+
+        else:
+            encoded_mels = mels * mel_masks_float_conv
+            encoded_features = self.encoder(encoded_mels) * mel_masks_float_conv
+
+        return encoded_features, mel_lengths
+    
+    def get_quantized_features_from_indices(self, indices, feature_lengths): # return quantized_features
+        factor = math.prod(self.quantizer.downsample_factor)
+        mel_masks = sequence_mask(feature_lengths * factor, indices.shape[2] * factor)
+        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype).to(indices.device)
+
+        z = self.quantizer.decode(indices) * mel_masks_float_conv
+        z = (
+            z
+            + self.quality_projection(torch.ones(z.shape[0], 1, device=z.device).to(self.encode_dtype) * 2)[
+                :, :, None
+            ]
+        )
+        return z, mel_masks_float_conv
+
+    def get_indices_from_unquantized_features(self, unquantized_features, mel_lengths): # return indices
+        indices_lengths = mel_lengths // math.prod(self.quantizer.downsample_factor)
+        return self.quantizer.encode(unquantized_features), indices_lengths
