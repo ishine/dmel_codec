@@ -45,6 +45,10 @@ class InitialCodec:
             config = MimiConfig.from_pretrained(self.ckpt_path)
             config.use_cache = True
             self.codec = MimiModel.from_pretrained(self.ckpt_path, config=config)
+        
+        elif self.codec_name == "fish_speech":
+            # TODO 把创建fish speech的codec写通
+            pass
 
         self.codec.to(self.device)
         self.codec.eval()
@@ -55,7 +59,8 @@ class InitialCodec:
             "DAC",
             "dMel",
             "mimi",
-        ], "Invalid codec name, assert codec_name in ['speechtokenizer', 'DAC', 'Encodec', 'dMel', 'mimi']"
+            "fish_speech",
+        ], "Invalid codec name, assert codec_name in ['speechtokenizer', 'DAC', 'Encodec', 'dMel', 'mimi', 'fish_speech']"
         if self.codec_name == "dMel":
             assert (
                 self.ckpt_path is not None

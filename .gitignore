@@ -33,3 +33,13 @@ outputs/
 .conda/
 tb_logs/
 ckpt/
+checkpoints/
+.vscode/
+2_input.wav
+fake.wav
+fake.npy
+test.py
+test.ipynb
+hfd.sh
+fish_speech_configs/
+fish-speech-1.4.3/

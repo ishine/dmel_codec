@@ -32,7 +32,8 @@ setup(
         "accelerate==1.2.1",
         "lion-pytorch==0.2.3",
         "pesq==0.0.4",
-        
+        "pyaudio==0.2.14",
+        "gradio==5.9.1",
         
         # optional
         "tensorboard>=2.0.0",
