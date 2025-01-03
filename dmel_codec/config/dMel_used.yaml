@@ -32,7 +32,7 @@ data: # training stage just active train_dataloader and val_dataloader
   - ??? # path for training recordings
   train_supervisions_paths:
   - ??? # path for training supervisions
-  train_prefix:
+  train_recordings_prefix:
   - ??? # path for training recordings prefix, must be same as val_recording_prefix or None
   train_max_duration: 60.0 # dynamic batch size, seconds
   train_num_workers: 8
@@ -42,7 +42,7 @@ data: # training stage just active train_dataloader and val_dataloader
   - ??? # path for validation recordings
   val_supervisions_paths:
   - ??? # path for validation supervisions
-  val_prefix:
+  val_recordings_prefix:
   - ??? # path for validation recordings prefix, must be same as train_recording_prefix or None
   val_max_duration: 4 # dynamic batch size, seconds
   val_num_workers: 2

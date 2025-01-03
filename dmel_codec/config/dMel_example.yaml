@@ -32,7 +32,7 @@ data: # training stage just active train_dataloader and val_dataloader
   - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz
   - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz
   - /sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz
-  train_recording_prefix:
+  train_recordings_prefix:
   - /sdb/data1/speech/24kHz/LibriTTS
   - /sdb/data1/speech/24kHz/LibriTTS
   - /sdb/data1/speech/24kHz/LibriTTS
@@ -46,7 +46,7 @@ data: # training stage just active train_dataloader and val_dataloader
   val_supervisions_paths:
   - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz
   - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-other.jsonl.gz
-  val_recording_prefix:
+  val_recordings_prefix:
   - /sdb/data1/speech/24kHz/LibriTTS
   - /sdb/data1/speech/24kHz/LibriTTS
   val_max_duration: 4 # dynamic batch size, seconds
