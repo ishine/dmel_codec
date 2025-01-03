@@ -31,7 +31,7 @@ setup(
         "beartype==0.19.0",
         "accelerate==1.2.1",
         "lion-pytorch==0.2.3",
-        
+        "pesq==0.0.4",
         
         
         # optional

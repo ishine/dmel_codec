@@ -68,7 +68,6 @@ class InitialCodec:
         else:
             print(f"Using {self.num_quantizers} quantizers")
 
-    @torch.no_grad()
     @torch.inference_mode()
     def extract_indices(self, audios: torch.Tensor, audio_lens: torch.Tensor):
         # audios.shape = (batch_size, 1, audio_len)
@@ -91,7 +90,6 @@ class InitialCodec:
 
         return indices, feature_lens
 
-    @torch.no_grad()
     @torch.inference_mode()
     def extract_latent_unquantized(self, audios: torch.Tensor, audio_lens: torch.Tensor):
         mel_lengths = None
@@ -117,7 +115,6 @@ class InitialCodec:
 
         return unquantized_features, mel_lengths
 
-    @torch.no_grad()
     @torch.inference_mode()
     def extract_latent_quantized(self, audios: torch.Tensor, audio_lens: torch.Tensor):
         mel_masks_float_conv = None
@@ -144,7 +141,6 @@ class InitialCodec:
 
         return quantized_features, mel_masks_float_conv
 
-    @torch.no_grad()
     @torch.inference_mode()
     def rec_audio_from_indices(self, indices: torch.Tensor, indices_lengths: torch.Tensor):
         gen_mel = None
@@ -167,7 +163,6 @@ class InitialCodec:
 
         return rec_audios, gen_mel
 
-    @torch.no_grad()
     @torch.inference_mode()
     def rec_audio_from_audio(self, audios: torch.Tensor, audio_lens: torch.Tensor):
         gen_mel = None
@@ -181,7 +176,7 @@ class InitialCodec:
             rec_audios = self.codec.decode(indices)
 
         elif self.codec_name == "DAC":
-            rec_audios = self.codec(audios)['audio']
+            rec_audios = self.codec(audios, n_quantizers=self.num_quantizers)['audio']
 
         elif self.codec_name == "mimi":
             padding_mask = self.get_padding_mask_for_mimi(audio_lens)
@@ -189,7 +184,7 @@ class InitialCodec:
 
         else:
             raise NotImplementedError(f"Rec from audio not implemented for {self.codec_name}")
-        
+
         return rec_audios, gen_mel
 
     def split_from_length(self, audios: torch.Tensor, length: int):

@@ -497,7 +497,7 @@ class VQGAN(L.LightningModule):
 
         # Encode
         if self.dmel_groups > 0:
-            dMel_masks_float_conv = self.expand_mask(mel_masks_float_conv)
+            dMel_masks_float_conv = self.expand_mask(mel_masks_float_conv).to(self.encode_dtype).to(mels.device)
             # encoded_dMels = rearrange(
             #     mels, "b (g f) t -> (b g) f t", g=self.dmel_groups
             # )
@@ -516,7 +516,7 @@ class VQGAN(L.LightningModule):
     def get_quantized_features_from_indices(self, indices, feature_lengths): # return quantized_features
         factor = math.prod(self.quantizer.downsample_factor)
         mel_masks = sequence_mask(feature_lengths * factor, indices.shape[2] * factor)
-        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype)
+        mel_masks_float_conv = mel_masks[:, None, :].to(self.encode_dtype).to(indices.device)
 
         z = self.quantizer.decode(indices) * mel_masks_float_conv
         z = (

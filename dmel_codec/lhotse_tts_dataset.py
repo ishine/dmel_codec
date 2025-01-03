@@ -286,8 +286,8 @@ class LhotseDataModule(LightningDataModule):
             for path in self.hparams.test_supervisions_paths:
                 self.test_supervisions += SupervisionSet.from_jsonl_lazy(path)
 
-            log.info(f"train_recordings: {self.train_recordings}")
-            log.info(f"train_supervisions: {self.train_supervisions}")
+            log.info(f"test_recordings: {self.test_recordings}")
+            log.info(f"test_supervisions: {self.test_supervisions}")
 
             self.test_cuts += CutSet.from_manifests(
                 recordings=self.test_recordings, supervisions=self.test_supervisions
