@@ -224,7 +224,7 @@ class VQGAN(L.LightningModule):
 
         self.log(
             "train/discriminator/loss",
-            loss_d,
+            loss_d * self.accumulate_grad,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -276,7 +276,7 @@ class VQGAN(L.LightningModule):
         # Log losses
         self.log(
             "train/generator/loss",
-            loss,
+            loss * self.accumulate_grad,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
