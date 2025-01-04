@@ -161,11 +161,11 @@ class VQGAN(L.LightningModule):
         scheduler_g, scheduler_d = self.lr_schedulers()
 
         audios, audio_lengths = batch["audios"], batch["audio_lengths"]
-        # audios: (channel, batch_size, audio_length)
-        audios = audios.transpose(0, 1) # audios: (batch_size, channel, audio_length)
+
+        # log.info(f"audio_paths: {batch['audio_paths']}")
+        # audios: (batch_size, 1, audio_length)
 
         audios = audios.float()
-
 
         with torch.no_grad():
             encode_mels = self.encode_mel_transform(audios)
@@ -329,9 +329,8 @@ class VQGAN(L.LightningModule):
 
     def validation_step(self, batch: Any, batch_idx: int):
         audios, audio_lengths = batch["audios"], batch["audio_lengths"]
-        # audios: (channel, batch_size, audio_length)
-        audios = audios.transpose(0, 1) # audios: (batch_size, channel, audio_length)
-
+        # audios: (batch_size, 1, audio_length)
+        # log.info(f"audio_paths: {batch['audio_paths']}")
         audios = audios.float()
         batch_size = audios.shape[0]
 
