@@ -11,7 +11,7 @@ filelists
 /.vscode
 /data_server/target
 /*.npy
-/*.wav
+*.wav
 /*.mp3
 /*.lab
 /results
@@ -35,8 +35,6 @@ tb_logs/
 ckpt/
 checkpoints/
 .vscode/
-2_input.wav
-fake.wav
 fake.npy
 test.py
 test.ipynb
