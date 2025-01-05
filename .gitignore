@@ -35,9 +35,8 @@ tb_logs/
 ckpt/
 checkpoints/
 .vscode/
-fake.npy
-test.py
-test.ipynb
+*.npy
+test*
 hfd.sh
 fish_speech_configs/
 fish-speech-1.4.3/
