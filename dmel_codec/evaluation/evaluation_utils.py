@@ -100,9 +100,9 @@ def calculate_ci_sdr(gt_audio: torch.Tensor, rec_audio: torch.Tensor):
     return calculate_si_snr(gt_audio, rec_audio)  # Simplified placeholder
 
 
-def calculate_stoi(gt_audio: torch.Tensor, rec_audio: torch.Tensor, sample_rate=24000):
+def calculate_stoi(rec_audio: torch.Tensor, gt_audio: torch.Tensor, sample_rate=24000):
     stoi = ShortTimeObjectiveIntelligibility(sample_rate).to(gt_audio.device)
-    return stoi(gt_audio, rec_audio).item()
+    return stoi(rec_audio, gt_audio).item()
 
 
 def calculate_spk_sim(
@@ -151,7 +151,7 @@ def compute_codebook_usage(all_codes: torch.Tensor, audio_mask: torch.Tensor | N
         return entropy
 
 
-def calculate_pesq(gt_audio: torch.Tensor, rec_audio: torch.Tensor, sample_rate=24000):
+def calculate_pesq(rec_audio: torch.Tensor, gt_audio: torch.Tensor, sample_rate=24000):
     pesq = PerceptualEvaluationSpeechQuality(16000, "wb")
 
     # PESQ要求采样率为16k或8k
@@ -167,7 +167,7 @@ def calculate_pesq(gt_audio: torch.Tensor, rec_audio: torch.Tensor, sample_rate=
     if gt_audio_cal.dim() == 2:
         gt_audio_cal = gt_audio_cal.view(-1)
         rec_audio_cal = rec_audio_cal.view(-1)
-        return pesq(gt_audio_cal, rec_audio_cal)
+        return pesq(rec_audio_cal, gt_audio_cal)
 
     elif gt_audio_cal.dim() == 3:
         gt_audio_cal = gt_audio_cal.view(gt_audio_cal.shape[0], -1)
@@ -175,13 +175,13 @@ def calculate_pesq(gt_audio: torch.Tensor, rec_audio: torch.Tensor, sample_rate=
         pesq_list = []
         for i in range(gt_audio_cal.shape[0]):
             try:
-                pesq_list.append(pesq(gt_audio_cal[i], rec_audio_cal[i]))
+                pesq_list.append(pesq(rec_audio_cal[i], gt_audio_cal[i]))
             except Exception as e:
                 print(f"gt_audio.shape = {gt_audio_cal.shape}, rec_audio.shape = {rec_audio_cal.shape}, error = {e}")
         return np.mean(np.array(pesq_list))
 
     elif gt_audio_cal.dim() == 1:
-        return pesq(gt_audio_cal, rec_audio_cal)
+        return pesq(rec_audio_cal, gt_audio_cal)
 
     else:
         raise ValueError("gt_audio dim must be 1, 2 or 3")

@@ -21,6 +21,8 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 class LhotseTTSDataset(Dataset):
 
     def __getitem__(self, cuts: CutSet):
+        # TODO 采样率？预处理方法例如normalize是如何做的？有预处理，那么后处理也需要加上：后处理方法例如denormalize是如何做的？
+        # TODO evaluation中，是否有使用正确的vocoder？
         cuts = cuts.sort_by_duration(ascending=False)
 
         # same with bigvgan

@@ -1,5 +1,7 @@
 import hydra
 import torch
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 # initial speechtokenizer | DAC | Encodec | Ours_dMel_codec | mimi(moshi codec)
 class InitialCodec:
@@ -10,12 +12,14 @@ class InitialCodec:
         device: str = "cpu",
         sample_rate: int = 24000,
         num_quantizers: int | None = None,
+        config_path: str = None,
     ):
         self.codec_name = codec_name
         self.ckpt_path = ckpt_path
         self.device = device
         self.sample_rate = sample_rate
         self.num_quantizers = num_quantizers
+        self.config_path = config_path
         self.hparams_check()
         if self.codec_name == "speechtokenizer":
             from speechtokenizer.model import SpeechTokenizer
@@ -45,6 +49,17 @@ class InitialCodec:
             config = MimiConfig.from_pretrained(self.ckpt_path)
             config.use_cache = True
             self.codec = MimiModel.from_pretrained(self.ckpt_path, config=config)
+        
+        elif self.codec_name == "fish_speech":
+            # TODO 把创建fish speech的codec写通
+            '''
+            config_path: 默认是 /home/wzy/projects/zcf_projects/dmel_codec/dmel_codec/config/fish_speech_configs/firefly_gan_vq.yaml
+                可以从fish speech的官方库： fish-speech-1.4.3/fish_speech/configs 中找到
+            ckpt_path: 默认是 /home/wzy/projects/zcf_projects/dmel_codec/checkpoints/fish-speech-1.4/firefly-gan-vq-fsq-8x1024-21hz-generator.pth
+                可以从 https://huggingface.co/fishaudio/fish-speech-1.4/tree/main 中找到，手动下载即可
+            '''
+            self.codec = load_fish_speech_model(config_path, ckpt_path)
+            self.sample_rate = self.codec.spec_transform.sample_rate
 
         self.codec.to(self.device)
         self.codec.eval()
@@ -55,7 +70,8 @@ class InitialCodec:
             "DAC",
             "dMel",
             "mimi",
-        ], "Invalid codec name, assert codec_name in ['speechtokenizer', 'DAC', 'Encodec', 'dMel', 'mimi']"
+            "fish_speech",
+        ], "Invalid codec name, assert codec_name in ['speechtokenizer', 'DAC', 'Encodec', 'dMel', 'mimi', 'fish_speech']"
         if self.codec_name == "dMel":
             assert (
                 self.ckpt_path is not None
@@ -67,6 +83,10 @@ class InitialCodec:
             print("No num_quantizers provided, using default quantizers")
         else:
             print(f"Using {self.num_quantizers} quantizers")
+        
+        if self.codec_name == "fish_speech":
+            assert self.config_path is not None, "config_path must be provided for fish_speech codec"
+            assert self.ckpt_path is not None, "ckpt_path must be provided for fish_speech codec"
 
     @torch.inference_mode()
     def extract_indices(self, audios: torch.Tensor, audio_lens: torch.Tensor):
@@ -84,6 +104,11 @@ class InitialCodec:
 
         elif self.codec_name == "mimi":
             indices, _ = self.codec._encode_frame(input_values = audios, num_quantizers=self.num_quantizers, padding_mask=None)
+        
+        elif self.codec_name == "fish_speech":
+            # 默认传入的音频已经被重采样到模型需要的频率了，第二个省略的参数是 feature_lens, 但是这个 feature_lens 可能存在偏差，因此手动获得更加准确
+            indices, _ = self.codec.encode(audios, audio_lens) # [b, c, t]
+            feature_lens = torch.tensor([indices.shape[-1]], device=self.device)
 
         else:
             raise NotImplementedError(f"Extract indices not implemented for {self.codec_name}")
@@ -109,6 +134,17 @@ class InitialCodec:
             )
             encoder_outputs = encoder_outputs[0].transpose(1, 2)
             unquantized_features = self.codec.downsample(encoder_outputs)
+        
+        elif self.codec_name == "fish_speech":
+            # NOTE mel_lengths 和feature length不同
+            audios = audios.float()
+            mels = self.codec.spec_transform(audios)
+            mel_lengths = audio_lens // self.codec.spec_transform.hop_length
+            mel_masks = self.sequence_mask(mel_lengths, mels.shape[2])
+            mel_masks_float_conv = mel_masks[:, None, :].float()
+            mels = mels * mel_masks_float_conv
+            # Encode
+            unquantized_features = self.codec.backbone(mels) * mel_masks_float_conv
 
         else:
             raise NotImplementedError(f"Extract latent unquantized not implemented for {self.codec_name}")
@@ -135,6 +171,20 @@ class InitialCodec:
         elif self.codec_name == "mimi":
             indices, _ = self.codec._encode_frame(input_values = audios, num_quantizers=self.num_quantizers, padding_mask=None)
             quantized_features = self.codec.quantizer.decode(indices)
+        
+        elif self.codec_name == "fish_speech":
+            indices, _ = self.codec.encode(audios, audio_lens) # [b, c, t]
+            feature_lengths = torch.tensor([indices.shape[-1]], device=self.device)
+            downsample_factor = self.codec.downsample_factor
+
+            mel_masks = self.sequence_mask(
+                feature_lengths * downsample_factor,
+                indices.shape[2] * downsample_factor,
+            )
+            mel_masks_float_conv = mel_masks[:, None, :].float()
+
+            # NOTE fish speech代码中需要乘以 mel_masks_float_conv
+            quantized_features = self.codec.quantizer.decode(indices) * mel_masks_float_conv
 
         else:
             raise NotImplementedError(f"Extract latent quantized not implemented for {self.codec_name}")
@@ -143,6 +193,9 @@ class InitialCodec:
 
     @torch.inference_mode()
     def rec_audio_from_indices(self, indices: torch.Tensor, indices_lengths: torch.Tensor):
+        '''
+        indices: [B, C, L]
+        '''
         gen_mel = None
         if self.codec_name == "dMel":
             rec_audios, gen_mel = self.codec.decode(indices, indices_lengths, return_audios=True)
@@ -157,6 +210,10 @@ class InitialCodec:
         elif self.codec_name == "mimi":
             padding_mask = self.get_padding_mask_for_mimi(audio_lens)
             rec_audios = self.codec.decode(indices, padding_mask=padding_mask).audio_values
+        
+        elif self.codec_name == "fish_speech":
+            # 此处被省略的参数为 audio_lengths
+            rec_audios, _ = self.codec.decode(indices=indices, feature_lengths=indices_lengths)
 
         else:
             raise NotImplementedError(f"Rec from indices not implemented for {self.codec_name}")
@@ -181,7 +238,13 @@ class InitialCodec:
         elif self.codec_name == "mimi":
             padding_mask = self.get_padding_mask_for_mimi(audio_lens)
             rec_audios = self.codec(audios, padding_mask=padding_mask).audio_values
-
+        
+        elif self.codec_name == "fish_speech":
+            # 默认传入的音频已经被重采样到模型需要的频率了，第二个省略的参数是 feature_lens
+            indices, _ = self.codec.encode(audios, audio_lens)
+            feature_lengths = torch.tensor([indices.shape[-1]], device=self.device)
+            # 此处被省略的参数为 audio_lengths
+            rec_audios, _ = self.codec.decode(indices=indices, feature_lengths=feature_lengths)
         else:
             raise NotImplementedError(f"Rec from audio not implemented for {self.codec_name}")
 
@@ -231,6 +294,38 @@ class InitialCodec:
         mask = mask.unsqueeze(1)
 
         return mask.bool().to(self.device)
+    
+    def sequence_mask(self, length, max_length=None):
+        if max_length is None:
+            max_length = length.max()
+        x = torch.arange(max_length, dtype=length.dtype, device=length.device)
+        return x.unsqueeze(0) < length.unsqueeze(1)
+
+def load_fish_speech_model(config_path, checkpoint_path):
+    # hydra.core.global_hydra.GlobalHydra.instance().clear()
+    cfg = OmegaConf.load(config_path)
+
+    model = instantiate(cfg)
+    state_dict = torch.load(
+        checkpoint_path, map_location=device, mmap=True, weights_only=True
+    )
+    if "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+
+    if any("generator" in k for k in state_dict):
+        state_dict = {
+            k.replace("generator.", ""): v
+            for k, v in state_dict.items()
+            if "generator." in k
+        }
+
+    result = model.load_state_dict(state_dict, strict=False, assign=True)
+    model.eval()
+
+    # logger.info(f"Loaded model: {result}")
+    return model
+
+
 
 if __name__ == "__main__":
     import torchaudio
@@ -379,3 +474,43 @@ if __name__ == "__main__":
 
         print(f"{device} mimi pass")
         del mimi
+
+
+
+        # fish_speech test
+        # NOTE 虽然此处传入的 sample_rate=24000， 但是在类的 init 过程中，会根据load的模型，自动调整到正确的sample_rate，也就是 44100
+        fish_speech_codec = InitialCodec(
+            codec_name="fish_speech",
+            ckpt_path="/home/wzy/projects/zcf_projects/dmel_codec/checkpoints/fish-speech-1.4/firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+            device=device,
+            sample_rate=24000,
+            config_path = "/home/wzy/projects/zcf_projects/dmel_codec/dmel_codec/config/fish_speech_configs/firefly_gan_vq.yaml"
+        )
+
+        audio_list = []
+        audio_lens_list = []
+        for audio_path in audio_path_list:
+            audio, sr = torchaudio.load(audio_path)
+            if sr != fish_speech_codec.sample_rate:
+                audio = torchaudio.functional.resample(audio, sr, fish_speech_codec.sample_rate)
+            audio = audio.unsqueeze(0).to(fish_speech_codec.device)
+            audio_lens = torch.tensor([audio.shape[-1]], dtype=torch.long).to(fish_speech_codec.device)
+            audio_list.append(audio)
+            audio_lens_list.append(audio_lens)
+
+        padded_audios, audio_lens = fish_speech_codec.pad_audio_tensor_from_list(audio_list, audio_lens_list)
+        # test batch rec from audio
+        _, _ = fish_speech_codec.rec_audio_from_audio(padded_audios, audio_lens)
+
+        # test batch rec from indices
+        indices, indices_lengths = fish_speech_codec.extract_indices(padded_audios, audio_lens)
+        _, _ = fish_speech_codec.rec_audio_from_indices(indices, indices_lengths)
+
+        # test batch extract latent unquantized
+        _, _ = fish_speech_codec.extract_latent_unquantized(padded_audios, audio_lens)
+
+        # test batch extract latent quantized
+        _, _ = fish_speech_codec.extract_latent_quantized(padded_audios, audio_lens)
+
+        print(f"{device} fish_speech pass")
+        del fish_speech_codec
