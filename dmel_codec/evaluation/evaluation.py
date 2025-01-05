@@ -11,6 +11,8 @@ from speechbrain.inference.speaker import EncoderClassifier
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 from dmel_codec.lhotse_tts_dataset import LhotseDataModule
 from tqdm import tqdm
+from dmel_codec.utils.logger import RankedLogger
+logger = RankedLogger(__name__)
 
 class Evaluation:
     def __init__(
@@ -71,7 +73,7 @@ class Evaluation:
             test_recordings_paths=test_recordings_paths,
             test_supervisions_paths=test_supervisions_paths,
             test_cuts_paths=test_cuts_paths,
-            test_prefix=test_prefix,
+            test_recordings_prefix=test_prefix,
             test_max_samples=test_max_samples,
             test_max_duration=self.max_duration,
             stage=stage,
@@ -84,28 +86,28 @@ class Evaluation:
     @torch.inference_mode()
     def get_wer(self, rec_audio, gt_audio, gt_text):
         return wer(
-            gt_audio,
-            rec_audio,
-            gt_text,
-            self.asr_processor,
-            self.asr_model,
+            gt_audio = gt_audio,
+            rec_audio = rec_audio,
+            gt_text = gt_text,
+            processor = self.asr_processor,
+            model = self.asr_model,
             sample_rate=self.codec.sample_rate,
         )
 
     @torch.inference_mode()
-    def get_pesq(self, rec_audio, g_audio):
-        return calculate_pesq(rec_audio, g_audio, sample_rate=self.codec.sample_rate)
+    def get_pesq(self, rec_audio, gt_audio):
+        return calculate_pesq(rec_audio = rec_audio, gt_audio = gt_audio, sample_rate=self.codec.sample_rate)
 
     @torch.inference_mode()
-    def get_stoi(self, rec_audio, g_audio):
-        return calculate_stoi(rec_audio, g_audio, sample_rate=self.codec.sample_rate)
+    def get_stoi(self, rec_audio, gt_audio):
+        return calculate_stoi(rec_audio = rec_audio, gt_audio = gt_audio, sample_rate=self.codec.sample_rate)
 
     @torch.inference_mode()
-    def get_spk_sim(self, rec_audio, g_audio):
+    def get_spk_sim(self, rec_audio, gt_audio):
         return calculate_spk_sim(
-            g_audio,
-            rec_audio,
-            self.spk_embedding_model,
+            gt_audio = gt_audio,
+            rec_audio = rec_audio,
+            model = self.spk_embedding_model,
             sample_rate=self.codec.sample_rate,
         )
 
@@ -115,9 +117,9 @@ class Evaluation:
         pesq_list = []
         stoi_list = []
         spk_sim_list = []
-        for batch in tqdm(self.test_dataloader):
+        for batch in self.test_dataloader:
             wer_gt, wer_rec, pesq, stoi, spk_sim = self.step(batch)
-            print(f"wer_gt: {wer_gt}, wer_rec: {wer_rec}, pesq: {pesq}, stoi: {stoi}, spk_sim: {spk_sim}")
+            logger.info(f"wer_gt: {wer_gt}, wer_rec: {wer_rec}, pesq: {pesq}, stoi: {stoi}, spk_sim: {spk_sim}")
             wer_gt_list.append(wer_gt)
             wer_rec_list.append(wer_rec)
             pesq_list.append(pesq)
@@ -150,10 +152,10 @@ class Evaluation:
         else:
             gt_audio = gt_audio[:, :, :rec_audio.shape[-1]]
 
-        wer_gt, wer_rec = self.get_wer(rec_audio, gt_audio, text)
-        pesq = self.get_pesq(rec_audio, gt_audio)
-        stoi = self.get_stoi(rec_audio, gt_audio)
-        spk_sim = self.get_spk_sim(rec_audio, gt_audio)
+        wer_gt, wer_rec = self.get_wer(rec_audio = rec_audio, gt_audio = gt_audio, gt_text = text)
+        pesq = self.get_pesq(rec_audio = rec_audio, gt_audio = gt_audio)
+        stoi = self.get_stoi(rec_audio = rec_audio, gt_audio = gt_audio)
+        spk_sim = self.get_spk_sim(rec_audio = rec_audio, gt_audio = gt_audio)
 
         return wer_gt, wer_rec, pesq, stoi, spk_sim
 
@@ -162,13 +164,14 @@ class Evaluation:
 
 if __name__ == "__main__":
     evaluation = Evaluation(
-        codec_name="speechtokenizer",
-        # ckpt_path="/home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec/epoch=022-step=906000_20hz.ckpt",
-        ckpt_path="/sdb/model_weight/speechTokenizer/speechtokenizer_hubert_avg",
+        codec_name="dMel",
+        ckpt_path="/home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec/epoch=022-step=906000_20hz.ckpt",
+        # ckpt_path="/sdb/model_weight/speechTokenizer/speechtokenizer_hubert_avg",
+        # ckpt_path="/sdb/model_weight/moshi_mimi_huggingface",
         # ckpt_path=None,
         device="cuda:1",
         sample_rate=24000,
-        num_quantizers=8,
+        num_quantizers=10,
         asr_model_ckpt_path='/sdb/model_weight/whisper-base',
         spk_embedding_model_name='speechbrain/spkrec-ecapa-voxceleb',
         max_duration=150,
@@ -189,4 +192,4 @@ if __name__ == "__main__":
         stage="test",
     )
     eval_result = evaluation.evaluation()
-    print(eval_result)
+    logger.info(eval_result)

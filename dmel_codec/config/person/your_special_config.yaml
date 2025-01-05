@@ -24,7 +24,7 @@ data:
   - /sdb/data1/speech/24kHz/Emilia
 
   train_max_duration: 60.0 # dynamic batch size, seconds
-  train_num_workers: 8
+  train_num_workers: 10
   train_cuts_paths: null
 
 
@@ -56,6 +56,14 @@ model:
     ckpt_path: /home/wzy/projects/bigvgan_v2_24khz_100band_256x/bigvgan_generator.pt
     h_path: /home/wzy/projects/bigvgan_v2_24khz_100band_256x/config.json
 
+  optimizer:
+    lr: 8e-5
+
+  lr_scheduler:
+    lr_lambda:
+      num_training_steps: 100000 # 100k
+      final_lr_ratio: 0.1
+
 callbacks:
   model_checkpoint:
     dirpath: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec
@@ -71,4 +79,6 @@ trainer:
   accelerator: gpu
   precision: 32
   devices: [0, 1]
+  max_steps: 10000000
+  val_check_interval: 4000
   

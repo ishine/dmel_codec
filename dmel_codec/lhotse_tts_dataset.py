@@ -5,11 +5,14 @@ from torch.utils.data import DataLoader, Dataset
 from lhotse import CutSet
 from lhotse.dataset import DynamicBucketingSampler
 from lhotse import RecordingSet, SupervisionSet
-from lhotse.dataset.collation import collate_audio
+from lhotse.dataset.collation import maybe_pad
 from lhotse.serialization import load_jsonl
 from lightning import LightningDataModule
 from dmel_codec.utils.utils import open_filelist
 from dmel_codec.utils.logger import RankedLogger
+from lhotse import CutSet
+import librosa
+import torch
 
 log = RankedLogger(__name__, rank_zero_only=False)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -20,12 +23,51 @@ class LhotseTTSDataset(Dataset):
     def __getitem__(self, cuts: CutSet):
         cuts = cuts.sort_by_duration(ascending=False)
 
-        audio, audio_lens = collate_audio(cuts)  # audio: (channel, audio_length)
-        text = [cut.supervisions[0].text for cut in cuts]
-        # audio_file = [cut.recording.id for cut in cuts]
+        # same with bigvgan
+        audio_list = []
+        audio_lens = []
+        audio_paths = []
+        for cut in cuts:
+            # audio = np.array(audio_length, )
+            audio_path = cut.recording.sources[0].source
+            audio, _ = librosa.load(
+                audio_path, sr=cut.sampling_rate, mono=True
+            )
+            audio = librosa.util.normalize(audio) * 0.95
+            audio = torch.FloatTensor(audio)
+            audio_list.append(audio)
+            audio_lens.append(audio.shape[0])
+            audio_paths.append(audio_path)
 
-        # return {"text": text, "audios": audio, "audio_lengths": audio_lens, "audio_file": audio_file}
-        return {"text": text, "audios": audio, "audio_lengths": audio_lens}
+        text = [cut.supervisions[0].text for cut in cuts]
+
+        return {
+            "text": text,
+            "audios": audio_list,
+            "audio_lengths": torch.tensor(audio_lens, dtype=torch.int32),
+            "audio_paths": audio_paths,
+        }
+
+    def collate_fn(self, batch):
+        audio_list = batch[0]["audios"]
+        audio_lens = batch[0]["audio_lengths"]
+        max_length = max(audio_lens)
+
+        # right pad audio
+        audio_list = [
+            torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1]))
+            for audio in audio_list
+        ]
+        audios = torch.stack(audio_list, dim=0)
+        if audios.ndim == 2:
+            audios = audios.unsqueeze(1)
+
+        return {
+            "text": batch[0]["text"],
+            "audios": audios,
+            "audio_lengths": audio_lens.reshape(1, -1),
+            "audio_paths": batch[0]["audio_paths"],
+        }
 
 
 class LhotseDataModule(LightningDataModule):
@@ -144,6 +186,7 @@ class LhotseDataModule(LightningDataModule):
             sampler=self.train_sampler,
             num_workers=self.hparams.train_num_workers,
             pin_memory=False,
+            collate_fn=self.train_dataset.collate_fn,
         )
 
     def val_dataloader(self):
@@ -152,6 +195,7 @@ class LhotseDataModule(LightningDataModule):
             sampler=self.val_sampler,
             num_workers=self.hparams.val_num_workers,
             pin_memory=False,
+            collate_fn=self.val_dataset.collate_fn,
         )
 
     def test_dataloader(self):
@@ -160,6 +204,7 @@ class LhotseDataModule(LightningDataModule):
             sampler=self.test_sampler,
             num_workers=self.hparams.test_num_workers,
             pin_memory=False,
+            collate_fn=self.test_dataset.collate_fn,
         )
 
     # check train hparams and load train filelist if train filelist is not None
@@ -208,22 +253,34 @@ class LhotseDataModule(LightningDataModule):
                 ), "train_recordings_paths and train_recordings_prefix must have the same length"
 
         # train_prefix == None
-        if self.hparams.train_recordings_prefix is None and self.hparams.train_recordings_paths is not None:
+        if (
+            self.hparams.train_recordings_prefix is None
+            and self.hparams.train_recordings_paths is not None
+        ):
             log.info(
                 f"train_recordings_prefix is None, pls check your train_recordings source is absolute path"
             )
 
-        if self.hparams.train_cuts_prefix is None and self.hparams.train_cuts_paths is not None:
+        if (
+            self.hparams.train_cuts_prefix is None
+            and self.hparams.train_cuts_paths is not None
+        ):
             log.info(
                 f"train_cuts_prefix is None, pls check your train_cuts source is absolute path"
             )
 
-        if self.hparams.train_recordings_filelist_prefix is None and self.hparams.train_recordings_filelist is not None:
+        if (
+            self.hparams.train_recordings_filelist_prefix is None
+            and self.hparams.train_recordings_filelist is not None
+        ):
             log.info(
                 f"train_recordings_filelist_prefix is None, pls check your train_recordings_filelist source is absolute path"
             )
 
-        if self.hparams.train_cuts_filelist_prefix is None and self.hparams.train_cuts_filelist is not None:
+        if (
+            self.hparams.train_cuts_filelist_prefix is None
+            and self.hparams.train_cuts_filelist is not None
+        ):
             log.info(
                 f"train_cuts_filelist_prefix is None, pls check your train_cuts_filelist source is absolute path"
             )
@@ -237,7 +294,6 @@ class LhotseDataModule(LightningDataModule):
             raise ValueError(
                 "train_recordings_paths, train_cuts_paths, train_recordings_filelist, train_cuts_filelist must be provided at least one"
             )
-
 
     # check val hparams and load val filelist if val filelist is not None
     def _val_stage_hparams_check(self):
@@ -285,22 +341,34 @@ class LhotseDataModule(LightningDataModule):
                 ), "val_recordings_paths and val_recordings_prefix must have the same length"
 
         # val_prefix == None
-        if self.hparams.val_recordings_prefix is None and self.hparams.val_recordings_paths is not None:
+        if (
+            self.hparams.val_recordings_prefix is None
+            and self.hparams.val_recordings_paths is not None
+        ):
             log.info(
                 f"val_recordings_prefix is None, pls check your val_recordings source is absolute path"
             )
 
-        if self.hparams.val_cuts_prefix is None and self.hparams.val_cuts_paths is not None:
+        if (
+            self.hparams.val_cuts_prefix is None
+            and self.hparams.val_cuts_paths is not None
+        ):
             log.info(
                 f"val_cuts_prefix is None, pls check your val_cuts source is absolute path"
             )
 
-        if self.hparams.val_recordings_filelist_prefix is None and self.hparams.val_recordings_filelist is not None:
+        if (
+            self.hparams.val_recordings_filelist_prefix is None
+            and self.hparams.val_recordings_filelist is not None
+        ):
             log.info(
                 f"val_recordings_filelist_prefix is None, pls check your val_recordings_filelist source is absolute path"
             )
 
-        if self.hparams.val_cuts_filelist_prefix is None and self.hparams.val_cuts_filelist is not None:
+        if (
+            self.hparams.val_cuts_filelist_prefix is None
+            and self.hparams.val_cuts_filelist is not None
+        ):
             log.info(
                 f"val_cuts_filelist_prefix is None, pls check your val_cuts_filelist source is absolute path"
             )
@@ -366,22 +434,34 @@ class LhotseDataModule(LightningDataModule):
                 ), "test_recordings_paths and test_recordings_prefix must have the same length"
 
         # train_prefix == None
-        if self.hparams.test_recordings_prefix is None and self.hparams.test_recordings_paths is not None:
+        if (
+            self.hparams.test_recordings_prefix is None
+            and self.hparams.test_recordings_paths is not None
+        ):
             log.info(
                 f"test_recordings_prefix is None, pls check your test_recordings source is absolute path"
             )
 
-        if self.hparams.test_cuts_prefix is None and self.hparams.test_cuts_paths is not None:
+        if (
+            self.hparams.test_cuts_prefix is None
+            and self.hparams.test_cuts_paths is not None
+        ):
             log.info(
                 f"test_cuts_prefix is None, pls check your test_cuts source is absolute path"
             )
 
-        if self.hparams.test_recordings_filelist_prefix is None and self.hparams.test_recordings_filelist is not None:
+        if (
+            self.hparams.test_recordings_filelist_prefix is None
+            and self.hparams.test_recordings_filelist is not None
+        ):
             log.info(
                 f"test_recordings_filelist_prefix is None, pls check your test_recordings_filelist source is absolute path"
             )
 
-        if self.hparams.test_cuts_filelist_prefix is None and self.hparams.test_cuts_filelist is not None:
+        if (
+            self.hparams.test_cuts_filelist_prefix is None
+            and self.hparams.test_cuts_filelist is not None
+        ):
             log.info(
                 f"test_cuts_filelist_prefix is None, pls check your test_cuts_filelist source is absolute path"
             )
@@ -414,7 +494,7 @@ class LhotseDataModule(LightningDataModule):
                 tmp_recordings = tmp_recordings.resample(self.hparams.sample_rate)
                 if self.hparams.train_recordings_prefix is not None:
                     prefix = self.hparams.train_recordings_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.train_recordings += tmp_recordings.with_path_prefix(prefix)
                     else:
                         self.train_recordings += tmp_recordings
@@ -437,7 +517,7 @@ class LhotseDataModule(LightningDataModule):
                 # all recordings in one filelist.txt use the same prefix
                 if self.hparams.train_recordings_filelist_prefix is not None:
                     prefix = self.hparams.train_recordings_filelist_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.train_recordings += tmp_recordings.with_path_prefix(prefix)
                     else:
                         self.train_recordings += tmp_recordings
@@ -445,11 +525,13 @@ class LhotseDataModule(LightningDataModule):
                     self.train_recordings += tmp_recordings
 
             # self.hparams.train_supervisions_paths_list: [[xxx], [xxx]]
-            for path_list in self.hparams.train_supervisions_paths_list:  
+            for path_list in self.hparams.train_supervisions_paths_list:
                 for path in path_list:
                     self.train_supervisions += SupervisionSet.from_jsonl_lazy(path)
 
-        if (self.hparams.train_recordings_paths is not None) or (self.hparams.train_recordings_filelist is not None):
+        if (self.hparams.train_recordings_paths is not None) or (
+            self.hparams.train_recordings_filelist is not None
+        ):
             log.info(f"train_recordings: {self.train_recordings}")
             log.info(f"train_supervisions: {self.train_supervisions}")
 
@@ -464,7 +546,7 @@ class LhotseDataModule(LightningDataModule):
                 tmp_cuts = tmp_cuts.resample(self.hparams.sample_rate)
                 if self.hparams.train_cuts_prefix is not None:
                     prefix = self.hparams.train_cuts_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.train_cuts += tmp_cuts.with_recording_path_prefix(prefix)
                     else:
                         self.train_cuts += tmp_cuts
@@ -484,7 +566,7 @@ class LhotseDataModule(LightningDataModule):
                 # all cuts in one filelist.txt use the same prefix
                 if self.hparams.train_cuts_filelist_prefix is not None:
                     prefix = self.hparams.train_cuts_filelist_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.train_cuts += tmp_cuts.with_recording_path_prefix(prefix)
                     else:
                         self.train_cuts += tmp_cuts
@@ -523,7 +605,7 @@ class LhotseDataModule(LightningDataModule):
                 tmp_recordings = tmp_recordings.resample(self.hparams.sample_rate)
                 if self.hparams.val_recordings_prefix is not None:
                     prefix = self.hparams.val_recordings_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.val_recordings += tmp_recordings.with_path_prefix(prefix)
                     else:
                         self.val_recordings += tmp_recordings
@@ -546,14 +628,16 @@ class LhotseDataModule(LightningDataModule):
                 # all recordings in one filelist.txt use the same prefix
                 if self.hparams.val_recordings_filelist_prefix is not None:
                     prefix = self.hparams.val_recordings_filelist_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.val_recordings += tmp_recordings.with_path_prefix(prefix)
                     else:
                         self.val_recordings += tmp_recordings
                 else:
                     self.val_recordings += tmp_recordings
 
-        if (self.hparams.val_recordings_paths is not None) or (self.hparams.val_recordings_filelist is not None):
+        if (self.hparams.val_recordings_paths is not None) or (
+            self.hparams.val_recordings_filelist is not None
+        ):
             log.info(f"val_recordings: {self.val_recordings}")
             log.info(f"val_supervisions: {self.val_supervisions}")
 
@@ -569,7 +653,7 @@ class LhotseDataModule(LightningDataModule):
                 tmp_cuts = tmp_cuts.resample(self.hparams.sample_rate)
                 if self.hparams.val_cuts_prefix is not None:
                     prefix = self.hparams.val_cuts_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.val_cuts += tmp_cuts.with_recording_path_prefix(prefix)
                     else:
                         self.val_cuts += tmp_cuts
@@ -589,7 +673,7 @@ class LhotseDataModule(LightningDataModule):
                 # all cuts in one filelist.txt use the same prefix
                 if self.hparams.val_cuts_filelist_prefix is not None:
                     prefix = self.hparams.val_cuts_filelist_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.val_cuts += tmp_cuts.with_recording_path_prefix(prefix)
                     else:
                         self.val_cuts += tmp_cuts
@@ -633,7 +717,7 @@ class LhotseDataModule(LightningDataModule):
                 tmp_recordings = tmp_recordings.resample(self.hparams.sample_rate)
                 if self.hparams.test_recordings_prefix is not None:
                     prefix = self.hparams.test_recordings_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.test_recordings += tmp_recordings.with_path_prefix(prefix)
                     else:
                         self.test_recordings += tmp_recordings
@@ -656,14 +740,16 @@ class LhotseDataModule(LightningDataModule):
                 # all recordings in one filelist.txt use the same prefix
                 if self.hparams.test_recordings_filelist_prefix is not None:
                     prefix = self.hparams.test_recordings_filelist_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.test_recordings += tmp_recordings.with_path_prefix(prefix)
                     else:
                         self.test_recordings += tmp_recordings
                 else:
                     self.test_recordings += tmp_recordings
 
-        if (self.hparams.test_recordings_paths is not None) or (self.hparams.test_recordings_filelist is not None):
+        if (self.hparams.test_recordings_paths is not None) or (
+            self.hparams.test_recordings_filelist is not None
+        ):
             log.info(f"test_recordings: {self.test_recordings}")
             log.info(f"test_supervisions: {self.test_supervisions}")
 
@@ -679,7 +765,7 @@ class LhotseDataModule(LightningDataModule):
                 tmp_cuts = tmp_cuts.resample(self.hparams.sample_rate)
                 if self.hparams.test_cuts_prefix is not None:
                     prefix = self.hparams.test_cuts_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.test_cuts += tmp_cuts.with_recording_path_prefix(prefix)
                     else:
                         self.test_cuts += tmp_cuts
@@ -697,7 +783,7 @@ class LhotseDataModule(LightningDataModule):
                 # all cuts in one filelist.txt use the same prefix
                 if self.hparams.test_cuts_filelist_prefix is not None:
                     prefix = self.hparams.test_cuts_filelist_prefix[idx]
-                    if prefix != '':
+                    if prefix != "":
                         self.test_cuts += tmp_cuts.with_recording_path_prefix(prefix)
                     else:
                         self.test_cuts += tmp_cuts
@@ -732,63 +818,71 @@ class LhotseDataModule(LightningDataModule):
                 os.path.join(self.hparams.output_dir, "test_cuts.jsonl.gz")
             )
 
+
 if __name__ == "__main__":
     # test
     data_module = LhotseDataModule(
-        train_recordings_paths=[
-            "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
-            "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
-            "/sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz",
+        # train_recordings_paths=[
+        #     "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
+        #     "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
+        #     "/sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz",
+        # ],
+        # train_supervisions_paths=[
+        #     "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
+        #     "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
+        #     "/sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz",
+        # ],
+        # train_recordings_prefix=[
+        #     "/sdb/data1/speech/24kHz/LibriTTS",
+        #     "/sdb/data1/speech/24kHz/LibriTTS",
+        #     "/sdb/data1/speech/44.1kHz/Aishell3",
+        # ],
+        train_cuts_filelist=[
+            "/sdb/data1/lhotse/filelist/emilia/EN/filelist.txt",
         ],
-        train_supervisions_paths=[
-            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
-            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
-            "/sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz",
-        ],
-        train_recordings_prefix=[  
-            "/sdb/data1/speech/24kHz/LibriTTS",
-            "/sdb/data1/speech/24kHz/LibriTTS",
-            "/sdb/data1/speech/44.1kHz/Aishell3",
-        ],
-        
-        train_cuts_paths=[
-            "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
-            "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
-        ],
-        train_cuts_prefix=[  
-            "/sdb/data1/speech/24kHz/Emilia",
+        train_cuts_filelist_prefix=[
             "/sdb/data1/speech/24kHz/Emilia",
         ],
-
-        train_cuts_filelist=["/sdb/data1/lhotse/filelist/emilia/EN/filelist.txt"],
-        train_cuts_filelist_prefix=["/sdb/data1/speech/24kHz/Emilia"],
-
-        val_recordings_paths=["/sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz"],
-        val_supervisions_paths=["/sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz"],
+        # train_cuts_paths=[
+        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
+        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
+        # ],
+        # train_cuts_prefix=[
+        #     "/sdb/data1/speech/24kHz/Emilia",
+        #     "/sdb/data1/speech/24kHz/Emilia",
+        # ],
+        # train_cuts_filelist=["/sdb/data1/lhotse/filelist/emilia/EN/filelist.txt"],
+        # train_cuts_filelist_prefix=["/sdb/data1/speech/24kHz/Emilia"],
+        val_recordings_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz"
+        ],
+        val_supervisions_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz"
+        ],
         val_recordings_prefix=["/sdb/data1/speech/24kHz/LibriTTS"],
-
-        val_cuts_paths=[
-            "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
-            "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
+        # val_cuts_paths=[
+        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
+        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
+        # ],
+        # val_cuts_prefix=[
+        #     "/sdb/data1/speech/24kHz/Emilia",
+        #     "/sdb/data1/speech/24kHz/Emilia",
+        # ],
+        test_recordings_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_recordings_test-clean.jsonl.gz"
         ],
-        val_cuts_prefix=[  
-            "/sdb/data1/speech/24kHz/Emilia",
-            "/sdb/data1/speech/24kHz/Emilia",
+        test_supervisions_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_test-clean.jsonl.gz"
         ],
-
-        test_recordings_paths=["/sdb/data1/lhotse/libritts/libritts_recordings_test-clean.jsonl.gz"],
-        test_supervisions_paths=["/sdb/data1/lhotse/libritts/libritts_supervisions_test-clean.jsonl.gz"],
         test_recordings_prefix=["/sdb/data1/speech/24kHz/LibriTTS"],
-
-        test_cuts_paths=[
-            "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
-            "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
-        ],
-        test_cuts_prefix=[  
-            "/sdb/data1/speech/24kHz/Emilia",
-            "/sdb/data1/speech/24kHz/Emilia",
-        ],
-
+        # test_cuts_paths=[
+        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
+        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
+        # ],
+        # test_cuts_prefix=[
+        #     "/sdb/data1/speech/24kHz/Emilia",
+        #     "/sdb/data1/speech/24kHz/Emilia",
+        # ],
         train_max_duration=60.0,
         train_num_workers=4,
         val_max_duration=60.0,
@@ -802,11 +896,11 @@ if __name__ == "__main__":
     log.info(f"train_loader: {train_loader}")
     cnt = 0
     for batch in train_loader:
-        log.info(f"cnt: {cnt}")
+        log.info(f"train stage cnt: {cnt}")
         log.info(batch.keys())
-        log.info(f"test: {batch['text']}")
-        log.info(f"wav: {batch['wav'].shape}")
-        log.info(f"duration: {batch['duration'].shape}")
+        log.info(f"train stage text: {batch['text']}")
+        log.info(f"train stage audios: {batch['audios'].shape}")
+        log.info(f"train stage audio_lengths: {batch['audio_lengths'].shape}")
         cnt += 1
         if cnt > 10:
             break
@@ -816,11 +910,11 @@ if __name__ == "__main__":
     log.info(f"val_loader: {val_loader}")
     cnt = 0
     for batch in val_loader:
-        log.info(f"cnt: {cnt}")
+        log.info(f"val stage cnt: {cnt}")
         log.info(batch.keys())
-        log.info(f"test: {batch['text']}")
-        log.info(f"wav: {batch['wav'].shape}")
-        log.info(f"duration: {batch['duration'].shape}")
+        log.info(f"val stage text: {batch['text']}")
+        log.info(f"val stage audios: {batch['audios'].shape}")
+        log.info(f"val stage audio_lengths: {batch['audio_lengths'].shape}")
         cnt += 1
         if cnt > 10:
             break
@@ -830,11 +924,11 @@ if __name__ == "__main__":
     log.info(f"test_loader: {test_loader}")
     cnt = 0
     for batch in test_loader:
-        log.info(f"cnt: {cnt}")
+        log.info(f"test stage cnt: {cnt}")
         log.info(batch.keys())
-        log.info(f"test: {batch['text']}")
-        log.info(f"wav: {batch['wav'].shape}")
-        log.info(f"duration: {batch['duration'].shape}")
+        log.info(f"test stage text: {batch['text']}")
+        log.info(f"test stage audios: {batch['audios'].shape}")
+        log.info(f"test stage audio_lengths: {batch['audio_lengths'].shape}")
         cnt += 1
         if cnt > 10:
             break
