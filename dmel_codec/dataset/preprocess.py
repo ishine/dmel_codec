@@ -1,9 +1,7 @@
 import logging
 import sys
 import os
-from torch.utils.data import DataLoader, Dataset
 from lhotse import CutSet
-from lhotse.dataset import DynamicBucketingSampler
 from lhotse import RecordingSet, SupervisionSet
 from lhotse.dataset.collation import maybe_pad
 from lhotse.serialization import load_jsonl
@@ -11,70 +9,21 @@ from lightning import LightningDataModule
 from dmel_codec.utils.utils import open_filelist
 from dmel_codec.utils.logger import RankedLogger
 from lhotse import CutSet
-import librosa
-import torch
-
+import random
+from time import time
+from tqdm import tqdm
 log = RankedLogger(__name__, rank_zero_only=False)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 
-class LhotseTTSDataset(Dataset):
-
-    def __getitem__(self, cuts: CutSet):
-        # TODO 采样率？预处理方法例如normalize是如何做的？有预处理，那么后处理也需要加上：后处理方法例如denormalize是如何做的？
-        # TODO evaluation中，是否有使用正确的vocoder？
-        cuts = cuts.sort_by_duration(ascending=False)
-
-        # same with bigvgan
-        audio_list = []
-        audio_lens = []
-        audio_paths = []
-        for cut in cuts:
-            # audio = np.array(audio_length, )
-            audio_path = cut.recording.sources[0].source
-            audio, _ = librosa.load(
-                audio_path, sr=cut.sampling_rate, mono=True
-            )
-            audio = librosa.util.normalize(audio) * 0.95
-            audio = torch.FloatTensor(audio)
-            audio_list.append(audio)
-            audio_lens.append(audio.shape[0])
-            audio_paths.append(audio_path)
-
-        text = [cut.supervisions[0].text for cut in cuts]
-
-        return {
-            "text": text,
-            "audios": audio_list,
-            "audio_lengths": torch.tensor(audio_lens, dtype=torch.int32),
-            "audio_paths": audio_paths,
-        }
-
-    def collate_fn(self, batch):
-        audio_list = batch[0]["audios"]
-        audio_lens = batch[0]["audio_lengths"]
-        max_length = max(audio_lens)
-
-        # right pad audio
-        audio_list = [
-            torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1]))
-            for audio in audio_list
-        ]
-        audios = torch.stack(audio_list, dim=0)
-        if audios.ndim == 2:
-            audios = audios.unsqueeze(1)
-
-        return {
-            "text": batch[0]["text"],
-            "audios": audios,
-            "audio_lengths": audio_lens.reshape(1, -1),
-            "audio_paths": batch[0]["audio_paths"],
-        }
-
-
-class LhotseDataModule(LightningDataModule):
+class LhotsePreProcess(LightningDataModule):
     def __init__(
         self,
+        # hparams required
+        output_dir: str,
+        stage: str,
+
+        # recordings, supervisions
         train_recordings_paths: list[str] | None = None,
         train_supervisions_paths: list[str] | None = None,
         train_recordings_filelist: list[str] | None = None,
@@ -87,44 +36,47 @@ class LhotseDataModule(LightningDataModule):
         test_supervisions_paths: list[str] | None = None,
         test_recordings_filelist: list[str] | None = None,
         test_supervisions_filelist: list[str] | None = None,
+
+        # cuts
         train_cuts_paths: list[str] | None = None,
         val_cuts_paths: list[str] | None = None,
         test_cuts_paths: list[str] | None = None,
         train_cuts_filelist: list[str] | None = None,
         val_cuts_filelist: list[str] | None = None,
         test_cuts_filelist: list[str] | None = None,
+
         # prefix for recording, Optional
         train_recordings_prefix: list[str] | None = None,
         val_recordings_prefix: list[str] | None = None,
         test_recordings_prefix: list[str] | None = None,
+
         # prefix for recording filelist, Optional
         train_recordings_filelist_prefix: list[str] | None = None,
         val_recordings_filelist_prefix: list[str] | None = None,
         test_recordings_filelist_prefix: list[str] | None = None,
+
         # prefix for cuts, Optional
         train_cuts_prefix: list[str] | None = None,
         val_cuts_prefix: list[str] | None = None,
         test_cuts_prefix: list[str] | None = None,
+
         # prefix for cuts filelist, Optional
         train_cuts_filelist_prefix: list[str] | None = None,
         val_cuts_filelist_prefix: list[str] | None = None,
         test_cuts_filelist_prefix: list[str] | None = None,
-        train_max_duration: float = 60.0,  # dynamic batch size, seconds
-        train_num_workers: int = 0,
-        val_max_duration: float = 60.0,  # dynamic batch size, seconds
-        val_num_workers: int = 0,
-        val_max_samples: int = 128,
-        # training stage just active train_dataloader and val_dataloader, None for not active
-        test_max_duration: float | None = None,  # dynamic batch size, seconds
-        test_num_workers: int | None = None,
-        test_max_samples: int | None = None,
-        world_size: int = 1,
-        rank: int = 0,
-        stage: str = "fit",  # for hparams check
-        output_dir: str | None = None,
+
+        # other hparams
+        max_samples: int | None = None,
         sample_rate: int = 24000,
+        window_size: int | None = None,
+        min_duration: float | None = None,
+        max_duration: float | None = None,
+        num_jobs: int = 10,
     ):
         """
+        output_dir: str
+            note: Required, for save cutset
+
         recordings, supervisions, cuts, filelist:
             note: These four parameters are mutually exclusive, you can only provide one of them
             note: filelist means you provide a txt file, and the txt file contains the absolute path info
@@ -138,26 +90,49 @@ class LhotseDataModule(LightningDataModule):
             note: if you are validate stage, you must provide val info
             note: if you are test stage, you must provide test info
 
-        max_duration: float = 60.0
-            note: dynamic batch size, seconds
         max_samples: int = 128
             note: for fit stage, only use max_samples samples to evaluate, speed up train
 
-        world_size: int = 1
-            note: for distributed training
+        window_size: int | None = None
+            note: for cutset, how many seconds in one cut, default None, just for train cutset
+        num_jobs: int = 10
+            note: for train cutset, how many jobs to use in split cutset into windows, default 10
 
-        output_dir: str | None = None
-            note: Optional, for save cutset, for resume training,
+        min_duration: float | None = None
+            note: for cutset, min duration, default None, just for train cutset
+
+        max_duration: float | None = None
+            note: for cutset, max duration, default None, just for train cutset
+
         """
         super().__init__()
 
-        self.save_hyperparameters(logger=False)
+        self.save_hyperparameters(logger=False) # use LightningDataModule easy save hparams
 
         self.hparams_check()  # check hparams and load filelist if filelist is not None
 
-        self.train_dataset = None
-        self.val_dataset = None
-        self.test_dataset = None
+    def process_cuts_for_train(self, cuts: CutSet):
+        log.info(f"original cuts: {cuts}")
+        cuts = cuts.to_eager()
+        if self.hparams.window_size is not None:
+            start_time = time()
+            cuts = cuts.cut_into_windows(duration=self.hparams.window_size, num_jobs=self.hparams.num_jobs)
+            end_time = time()
+            log.info(f"cut_into_windows time: {end_time - start_time}")
+        if self.hparams.min_duration is not None:
+            start_time = time()
+            cuts = cuts.filter(lambda cut: cut.duration >= self.hparams.min_duration)
+            end_time = time()
+            log.info(f"filter min_duration time: {end_time - start_time}")
+        if self.hparams.max_duration is not None:
+            start_time = time()
+            cuts = cuts.filter(lambda cut: cut.duration <= self.hparams.max_duration)
+            end_time = time()
+            log.info(f"filter max_duration time: {end_time - start_time}")
+
+        cuts = cuts.to_eager()
+        log.info(f"processed cuts: {cuts}")
+        return cuts
 
     def hparams_check(self):
         if self.hparams.stage == "fit":
@@ -170,47 +145,34 @@ class LhotseDataModule(LightningDataModule):
         if self.hparams.stage == "test":
             self._test_stage_hparams_check()
 
-    def setup(self, stage: str):
+    def save_cutset(self):
         # fit == train, need train and val dataset
-        if stage == "fit":
-            self._set_up_train_dataset()
-            self._set_up_val_dataset()
+        if self.hparams.stage == "fit":
+            self._save_train_cutset()
+            self._save_val_cutset()
 
-        elif stage == "validate":
-            self._set_up_val_dataset()
+        elif self.hparams.stage == "validate":
+            self._save_val_cutset()
 
-        elif stage == "test":
-            self._set_up_test_dataset()
-
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_dataset,
-            sampler=self.train_sampler,
-            num_workers=self.hparams.train_num_workers,
-            pin_memory=False,
-            collate_fn=self.train_dataset.collate_fn,
-        )
-
-    def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            sampler=self.val_sampler,
-            num_workers=self.hparams.val_num_workers,
-            pin_memory=False,
-            collate_fn=self.val_dataset.collate_fn,
-        )
-
-    def test_dataloader(self):
-        return DataLoader(
-            self.test_dataset,
-            sampler=self.test_sampler,
-            num_workers=self.hparams.test_num_workers,
-            pin_memory=False,
-            collate_fn=self.test_dataset.collate_fn,
-        )
+        elif self.hparams.stage == "test":
+            self._save_test_cutset()
 
     # check train hparams and load train filelist if train filelist is not None
     def _train_stage_hparams_check(self):
+        # output_dir
+        assert self.hparams.output_dir is not None, "output_dir must be provided"
+        if os.path.exists(self.hparams.output_dir):
+            log.info(f"output_dir {self.hparams.output_dir} already exists")
+        else:
+            os.makedirs(self.hparams.output_dir, exist_ok=True)
+        
+        if self.hparams.window_size is None:
+            log.info(f"window_size is None, do not split audio into windows")
+        if self.hparams.min_duration is None:
+            log.info(f"min_duration is None, do not filter min_duration")
+        if self.hparams.max_duration is None:
+            log.info(f"max_duration is None, do not filter max_duration")
+
         # train_recordings_filelist and train_supervisions_filelist and train_cuts_filelist
         if self.hparams.train_recordings_filelist is not None:
             assert len(self.hparams.train_recordings_filelist) == len(
@@ -299,6 +261,7 @@ class LhotseDataModule(LightningDataModule):
 
     # check val hparams and load val filelist if val filelist is not None
     def _val_stage_hparams_check(self):
+        assert self.hparams.output_dir is not None, "output_dir must be provided"
         # val_recordings_filelist and val_supervisions_filelist and val_cuts_filelist
         if self.hparams.val_recordings_filelist is not None:
             assert len(self.hparams.val_recordings_filelist) == len(
@@ -385,13 +348,14 @@ class LhotseDataModule(LightningDataModule):
                 "val_recordings_paths, val_cuts_paths, val_recordings_filelist, val_cuts_filelist must be provided at least one"
             )
 
-        if self.hparams.val_max_samples is not None:
-            log.info(f"val stage just use {self.hparams.val_max_samples} samples")
-        elif self.hparams.val_max_samples is None:
+        if self.hparams.max_samples is not None:
+            log.info(f"val stage just use {self.hparams.max_samples} samples")
+        elif self.hparams.max_samples is None:
             log.info(f"val stage use all samples")
 
     # check test hparams and load test filelist if test filelist is not None
     def _test_stage_hparams_check(self):
+        assert self.hparams.output_dir is not None, "output_dir must be provided"
         # test_recordings_filelist and test_supervisions_filelist and test_cuts_filelist
         if self.hparams.test_recordings_filelist is not None:
             assert len(self.hparams.test_recordings_filelist) == len(
@@ -478,13 +442,13 @@ class LhotseDataModule(LightningDataModule):
                 "test_recordings_paths, test_cuts_paths, test_recordings_filelist, test_cuts_filelist must be provided at least one"
             )
 
-        if self.hparams.test_max_samples is not None:
-            log.info(f"test stage just use {self.hparams.test_max_samples} samples")
-        elif self.hparams.test_max_samples is None:
+        if self.hparams.max_samples is not None:
+            log.info(f"test stage just use {self.hparams.max_samples} samples")
+        elif self.hparams.max_samples is None:
             log.info(f"test stage use all samples")
 
     # load train dataset
-    def _set_up_train_dataset(self):
+    def _save_train_cutset(self):
         # train_recordings and train_supervisions
         self.train_cuts = CutSet()
         self.train_recordings = RecordingSet()
@@ -534,12 +498,11 @@ class LhotseDataModule(LightningDataModule):
         if (self.hparams.train_recordings_paths is not None) or (
             self.hparams.train_recordings_filelist is not None
         ):
-            log.info(f"train_recordings: {self.train_recordings}")
-            log.info(f"train_supervisions: {self.train_supervisions}")
 
             self.train_cuts += CutSet.from_manifests(
                 recordings=self.train_recordings, supervisions=self.train_supervisions
             )
+            self.train_cuts = self.process_cuts_for_train(self.train_cuts)
 
         # train_cuts
         if self.hparams.train_cuts_paths is not None:
@@ -549,11 +512,9 @@ class LhotseDataModule(LightningDataModule):
                 if self.hparams.train_cuts_prefix is not None:
                     prefix = self.hparams.train_cuts_prefix[idx]
                     if prefix != "":
-                        self.train_cuts += tmp_cuts.with_recording_path_prefix(prefix)
-                    else:
-                        self.train_cuts += tmp_cuts
-                else:
-                    self.train_cuts += tmp_cuts
+                        tmp_cuts = tmp_cuts.with_recording_path_prefix(prefix)
+                tmp_cuts = self.process_cuts_for_train(tmp_cuts)
+                self.train_cuts += tmp_cuts
 
         # train_cuts_filelist
         if self.hparams.train_cuts_filelist is not None:
@@ -561,41 +522,40 @@ class LhotseDataModule(LightningDataModule):
                 self.hparams.train_cuts_paths_list
             ):  # self.hparams.train_cuts_paths_list: [[xxx], [xxx]]
                 tmp_cuts = CutSet()
-                for path in path_list:
-                    tmp_cuts += CutSet.from_jsonl_lazy(path)
-                # resample
-                tmp_cuts = tmp_cuts.resample(self.hparams.sample_rate)
                 # all cuts in one filelist.txt use the same prefix
                 if self.hparams.train_cuts_filelist_prefix is not None:
                     prefix = self.hparams.train_cuts_filelist_prefix[idx]
-                    if prefix != "":
-                        self.train_cuts += tmp_cuts.with_recording_path_prefix(prefix)
-                    else:
-                        self.train_cuts += tmp_cuts
                 else:
-                    self.train_cuts += tmp_cuts
+                    prefix = ""
+                for path in tqdm(path_list, desc="load train_cuts_filelist"):
+                    tmp_tmp_cuts =  CutSet.from_jsonl_lazy(path)
+                    # resample
+                    tmp_tmp_cuts = tmp_tmp_cuts.resample(self.hparams.sample_rate)
+                    if prefix != "":
+                        tmp_tmp_cuts = tmp_tmp_cuts.with_recording_path_prefix(prefix)
+                    # process cuts one by one is faster than process all cuts at once
+                    tmp_tmp_cuts = self.process_cuts_for_train(tmp_tmp_cuts)
+                    tmp_cuts += tmp_tmp_cuts
+                self.train_cuts += tmp_cuts
 
-        log.info(f"train_cuts: {self.train_cuts}")
-
-        if self.hparams.output_dir is not None:
-            self.train_cuts.to_file(
-                os.path.join(self.hparams.output_dir, "train_cuts.jsonl.gz")
-            )
-
-        self.train_dataset = LhotseTTSDataset()
-        log.info(f"train_dataset: {self.train_dataset}")
-
-        self.train_sampler = DynamicBucketingSampler(
-            self.train_cuts,
-            max_duration=self.hparams.train_max_duration,
-            shuffle=True,
-            drop_last=False,
-            world_size=self.hparams.world_size,
+        windows = self.hparams.window_size if self.hparams.window_size is not None else "None"
+        min_duration = self.hparams.min_duration if self.hparams.min_duration is not None else "None"
+        max_duration = self.hparams.max_duration if self.hparams.max_duration is not None else "None"
+        save_file_name = f"train_cuts_windows-{windows}_min_duration-{min_duration}_max_duration-{max_duration}.jsonl.gz"
+        all_cuts_duration = 0.0
+        all_cuts_num = 0
+        for cut in tqdm(self.train_cuts, desc="calculate train_cuts duration"):
+            all_cuts_duration += cut.duration
+            all_cuts_num += 1
+        log.info(f"all cuts duration: {all_cuts_duration}")
+        log.info(f"all cuts num: {all_cuts_num}")
+        self.train_cuts.to_file(
+            os.path.join(self.hparams.output_dir, save_file_name)
         )
-        log.info(f"train_sampler: {self.train_sampler}")
+        log.info(f"save train_cuts to {os.path.join(self.hparams.output_dir, save_file_name)}")
 
     # load val dataset
-    def _set_up_val_dataset(self):
+    def _save_val_cutset(self):
         self.val_cuts = CutSet()
         self.val_recordings = RecordingSet()
         self.val_supervisions = SupervisionSet()
@@ -640,8 +600,6 @@ class LhotseDataModule(LightningDataModule):
         if (self.hparams.val_recordings_paths is not None) or (
             self.hparams.val_recordings_filelist is not None
         ):
-            log.info(f"val_recordings: {self.val_recordings}")
-            log.info(f"val_supervisions: {self.val_supervisions}")
 
             self.val_cuts += CutSet.from_manifests(
                 recordings=self.val_recordings, supervisions=self.val_supervisions
@@ -682,32 +640,17 @@ class LhotseDataModule(LightningDataModule):
                 else:
                     self.val_cuts += tmp_cuts
 
+        if self.hparams.max_samples is not None:
+            self.val_cuts = self.val_cuts.sample(self.hparams.max_samples)
+
         if self.hparams.output_dir is not None:
             self.val_cuts.to_file(
-                os.path.join(self.hparams.output_dir, "val_cuts.jsonl.gz")
+                os.path.join(self.hparams.output_dir, f"val_cuts_sample-{self.hparams.max_samples}.jsonl.gz")
             )
-
-        self.val_dataset = LhotseTTSDataset()
-        log.info(f"val_dataset: {self.val_dataset}")
-        if (
-            self.hparams.val_max_samples is not None
-            and len(self.val_cuts) > self.hparams.val_max_samples
-        ):
-            self.val_cuts = CutSet.from_cuts(
-                list(self.val_cuts)[: self.hparams.val_max_samples]
-            )
-
-        self.val_sampler = DynamicBucketingSampler(
-            self.val_cuts,
-            max_duration=self.hparams.val_max_duration,
-            shuffle=False,
-            drop_last=False,
-            world_size=self.hparams.world_size,
-        )
-        log.info(f"val_sampler: {self.val_sampler}")
+        log.info(f"save val_cuts to {os.path.join(self.hparams.output_dir, f'val_cuts_sample-{self.hparams.max_samples}.jsonl.gz')}")
 
     # load test dataset
-    def _set_up_test_dataset(self):
+    def _save_test_cutset(self):
         self.test_cuts = CutSet()
         self.test_recordings = RecordingSet()
         self.test_supervisions = SupervisionSet()
@@ -752,8 +695,6 @@ class LhotseDataModule(LightningDataModule):
         if (self.hparams.test_recordings_paths is not None) or (
             self.hparams.test_recordings_filelist is not None
         ):
-            log.info(f"test_recordings: {self.test_recordings}")
-            log.info(f"test_supervisions: {self.test_supervisions}")
 
             self.test_cuts += CutSet.from_manifests(
                 recordings=self.test_recordings, supervisions=self.test_supervisions
@@ -790,71 +731,44 @@ class LhotseDataModule(LightningDataModule):
                     else:
                         self.test_cuts += tmp_cuts
 
-        self.test_dataset = LhotseTTSDataset()
-        log.info(f"test_dataset: {self.test_dataset}")
+        if self.hparams.max_samples is not None:
+            self.test_cuts = self.test_cuts.sample(self.hparams.max_samples)
 
         if self.hparams.output_dir is not None:
             self.test_cuts.to_file(
-                os.path.join(self.hparams.output_dir, "test_cuts.jsonl.gz")
+                os.path.join(self.hparams.output_dir, f"test_cuts_sample-{self.hparams.max_samples}.jsonl.gz")
             )
-
-        if (
-            self.hparams.test_max_samples is not None
-            and len(self.test_cuts) > self.hparams.test_max_samples
-        ):
-            self.test_cuts = CutSet.from_cuts(
-                list(self.test_cuts)[: self.hparams.test_max_samples]
-            )
-
-        self.test_sampler = DynamicBucketingSampler(
-            self.test_cuts,
-            max_duration=self.hparams.test_max_duration,
-            shuffle=False,
-            drop_last=False,
-            world_size=self.hparams.world_size,
-        )
-        log.info(f"test_sampler: {self.test_sampler}")
-
-        if self.hparams.output_dir is not None:
-            self.test_cuts.to_file(
-                os.path.join(self.hparams.output_dir, "test_cuts.jsonl.gz")
-            )
+        log.info(f"save test_cuts to {os.path.join(self.hparams.output_dir, f'test_cuts_sample-{self.hparams.max_samples}.jsonl.gz')}")
 
 
 if __name__ == "__main__":
     # test
-    data_module = LhotseDataModule(
-        # train_recordings_paths=[
-        #     "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
-        #     "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
-        #     "/sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz",
-        # ],
-        # train_supervisions_paths=[
-        #     "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
-        #     "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
-        #     "/sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz",
-        # ],
-        # train_recordings_prefix=[
-        #     "/sdb/data1/speech/24kHz/LibriTTS",
-        #     "/sdb/data1/speech/24kHz/LibriTTS",
-        #     "/sdb/data1/speech/44.1kHz/Aishell3",
-        # ],
+    data_module = LhotsePreProcess(
+        train_recordings_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
+            "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
+            "/sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz",
+            "/sdb/data1/lhotse/libritts/libritts_recordings_train-other-500.jsonl.gz",
+        ],
+        train_supervisions_paths=[
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
+            "/sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz",
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz",
+        ],
+        train_recordings_prefix=[
+            "/sdb/data1/speech/24kHz/LibriTTS",
+            "/sdb/data1/speech/24kHz/LibriTTS",
+            "/sdb/data1/speech/44.1kHz/Aishell3",
+            "/sdb/data1/speech/24kHz/LibriTTS",
+        ],
         train_cuts_filelist=[
             "/sdb/data1/lhotse/filelist/emilia/EN/filelist.txt",
         ],
         train_cuts_filelist_prefix=[
             "/sdb/data1/speech/24kHz/Emilia",
         ],
-        # train_cuts_paths=[
-        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
-        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
-        # ],
-        # train_cuts_prefix=[
-        #     "/sdb/data1/speech/24kHz/Emilia",
-        #     "/sdb/data1/speech/24kHz/Emilia",
-        # ],
-        # train_cuts_filelist=["/sdb/data1/lhotse/filelist/emilia/EN/filelist.txt"],
-        # train_cuts_filelist_prefix=["/sdb/data1/speech/24kHz/Emilia"],
+
         val_recordings_paths=[
             "/sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz"
         ],
@@ -862,75 +776,15 @@ if __name__ == "__main__":
             "/sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz"
         ],
         val_recordings_prefix=["/sdb/data1/speech/24kHz/LibriTTS"],
-        # val_cuts_paths=[
-        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
-        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
-        # ],
-        # val_cuts_prefix=[
-        #     "/sdb/data1/speech/24kHz/Emilia",
-        #     "/sdb/data1/speech/24kHz/Emilia",
-        # ],
-        test_recordings_paths=[
-            "/sdb/data1/lhotse/libritts/libritts_recordings_test-clean.jsonl.gz"
-        ],
-        test_supervisions_paths=[
-            "/sdb/data1/lhotse/libritts/libritts_supervisions_test-clean.jsonl.gz"
-        ],
-        test_recordings_prefix=["/sdb/data1/speech/24kHz/LibriTTS"],
-        # test_cuts_paths=[
-        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00000.jsonl.gz",
-        #     "/sdb/data1/lhotse/emilia-lhotse/EN/EN_cuts_B00019.jsonl.gz",
-        # ],
-        # test_cuts_prefix=[
-        #     "/sdb/data1/speech/24kHz/Emilia",
-        #     "/sdb/data1/speech/24kHz/Emilia",
-        # ],
-        train_max_duration=60.0,
-        train_num_workers=4,
-        val_max_duration=60.0,
-        val_num_workers=4,
-        test_max_duration=60.0,
-        test_num_workers=4,
+
+        window_size=3,
+        min_duration=3.0,
+        num_jobs=40,
+        sample_rate=24000,
+        output_dir="/home/wzy/projects/dmel_codec",
+        stage="validate",
+        max_samples=128,
     )
 
-    data_module.setup("fit")
-    train_loader = data_module.train_dataloader()
-    log.info(f"train_loader: {train_loader}")
-    cnt = 0
-    for batch in train_loader:
-        log.info(f"train stage cnt: {cnt}")
-        log.info(batch.keys())
-        log.info(f"train stage text: {batch['text']}")
-        log.info(f"train stage audios: {batch['audios'].shape}")
-        log.info(f"train stage audio_lengths: {batch['audio_lengths'].shape}")
-        cnt += 1
-        if cnt > 10:
-            break
+    data_module.save_cutset()
 
-    data_module.setup("validate")
-    val_loader = data_module.val_dataloader()
-    log.info(f"val_loader: {val_loader}")
-    cnt = 0
-    for batch in val_loader:
-        log.info(f"val stage cnt: {cnt}")
-        log.info(batch.keys())
-        log.info(f"val stage text: {batch['text']}")
-        log.info(f"val stage audios: {batch['audios'].shape}")
-        log.info(f"val stage audio_lengths: {batch['audio_lengths'].shape}")
-        cnt += 1
-        if cnt > 10:
-            break
-
-    data_module.setup("test")
-    test_loader = data_module.test_dataloader()
-    log.info(f"test_loader: {test_loader}")
-    cnt = 0
-    for batch in test_loader:
-        log.info(f"test stage cnt: {cnt}")
-        log.info(batch.keys())
-        log.info(f"test stage text: {batch['text']}")
-        log.info(f"test stage audios: {batch['audios'].shape}")
-        log.info(f"test stage audio_lengths: {batch['audio_lengths'].shape}")
-        cnt += 1
-        if cnt > 10:
-            break

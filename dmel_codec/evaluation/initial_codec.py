@@ -3,7 +3,7 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-# initial speechtokenizer | DAC | Encodec | Ours_dMel_codec | mimi(moshi codec)
+# initial speechtokenizer | DAC | Encodec | Ours_dMel_codec | mimi(moshi codec) | fish_speech
 class InitialCodec:
     def __init__(
         self,
@@ -51,7 +51,6 @@ class InitialCodec:
             self.codec = MimiModel.from_pretrained(self.ckpt_path, config=config)
         
         elif self.codec_name == "fish_speech":
-            # TODO 把创建fish speech的codec写通
             '''
             config_path: 默认是 /home/wzy/projects/zcf_projects/dmel_codec/dmel_codec/config/fish_speech_configs/firefly_gan_vq.yaml
                 可以从fish speech的官方库： fish-speech-1.4.3/fish_speech/configs 中找到

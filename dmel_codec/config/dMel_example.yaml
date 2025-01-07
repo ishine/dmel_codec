@@ -23,36 +23,16 @@ dmel_groups: 10
 pad_length: 0
 
 data: # training stage just active train_dataloader and val_dataloader
-  _target_: dmel_codec.lhotse_tts_dataset.LhotseDataModule
-  train_recordings_paths:
-  - /sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_recordings_train-other-500.jsonl.gz
-  train_supervisions_paths:
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz
-  train_recordings_prefix:
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/24kHz/LibriTTS
-  train_max_duration: 60.0 # dynamic batch size, seconds
+  _target_: dmel_codec.dataset.lhotse_tts_dataset.LhotseDataModule
+  train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
+  val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
+
+  train_max_durations: 60.0 # dynamic batch size, seconds
   train_num_workers: 8
 
-
-  val_recordings_paths:
-  - /sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_recordings_dev-other.jsonl.gz
-  val_supervisions_paths:
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-other.jsonl.gz
-  val_recordings_prefix:
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/24kHz/LibriTTS
-  val_max_duration: 4 # dynamic batch size, seconds
+  val_max_durations: 4 # dynamic batch size, seconds
   val_num_workers: 2
-  val_max_samples: 128 # just validate 128 samples
-
+  world_size: 1 # how many gpus
 
 model:
   _target_: dmel_codec.models.lit_modules.VQGAN

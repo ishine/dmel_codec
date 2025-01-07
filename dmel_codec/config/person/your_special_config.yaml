@@ -1,49 +1,17 @@
 concat_channels_dim: 700
 dmel_groups: 10
+codec_ckpt_dir: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec
 
 data:
-  train_recordings_paths:
-  - /sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_recordings_train-other-500.jsonl.gz
-  - /sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz
-  train_supervisions_paths:
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz
-  - /sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz
-  train_recordings_prefix:
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/44.1kHz/Aishell3
+  train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
+  val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
 
-  train_cuts_filelist:
-  - /sdb/data1/lhotse/filelist/emilia/EN/filelist.txt
-  train_cuts_filelist_prefix:
-  - /sdb/data1/speech/24kHz/Emilia
-
-  train_max_duration: 60.0 # dynamic batch size, seconds
+  train_max_durations: 60.0 # dynamic batch size, seconds
   train_num_workers: 10
-  train_cuts_paths: null
-
-
-  val_recordings_paths:
-  - /sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_recordings_dev-other.jsonl.gz
-  val_supervisions_paths:
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz
-  - /sdb/data1/lhotse/libritts/libritts_supervisions_dev-other.jsonl.gz
-  val_recordings_prefix:
-  - /sdb/data1/speech/24kHz/LibriTTS
-  - /sdb/data1/speech/24kHz/LibriTTS
-  val_max_duration: 4 # dynamic batch size, seconds
+  val_max_durations: 4 # dynamic batch size, seconds
   val_num_workers: 2
-  val_cuts_paths: null
-  val_max_samples: 128 # just validate 128 samples
 
   world_size: 2 # same with GPU number
-  sample_rate: 24000
 
 model:
   accumulate_grad: 2 # gradient accumulation steps
@@ -57,7 +25,7 @@ model:
     h_path: /home/wzy/projects/bigvgan_v2_24khz_100band_256x/config.json
 
   optimizer:
-    lr: 8e-5
+    lr: 1e-4
 
   lr_scheduler:
     lr_lambda:
