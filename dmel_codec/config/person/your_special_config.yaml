@@ -3,11 +3,12 @@ dmel_groups: 10
 codec_ckpt_dir: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec
 
 data:
+  stage: fit
   train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
   val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
 
-  train_max_durations: 60.0 # dynamic batch size, seconds
-  train_num_workers: 10
+  train_max_durations: 210.0 # dynamic batch size, seconds
+  train_num_workers: 40
   val_max_durations: 4 # dynamic batch size, seconds
   val_num_workers: 2
 
@@ -49,4 +50,3 @@ trainer:
   devices: [0, 1]
   max_steps: 10000000
   val_check_interval: 4000
-  

@@ -24,6 +24,7 @@ pad_length: 0
 
 data: # training stage just active train_dataloader and val_dataloader
   _target_: dmel_codec.dataset.lhotse_tts_dataset.LhotseDataModule
+  stage: fit
   train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
   val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
 

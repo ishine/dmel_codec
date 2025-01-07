@@ -119,16 +119,16 @@ class LhotseDataModule(LightningDataModule):
         if self.hparams.stage == "test":
             self._test_stage_hparams_check()
 
-    def setup(self):
+    def setup(self, stage: str):
         # fit == train, need train and val dataset
-        if self.hparams.stage == "fit":
+        if stage == "fit":
             self._set_up_train_dataset()
             self._set_up_val_dataset()
 
-        elif self.hparams.stage == "validate":
+        elif stage == "validate":
             self._set_up_val_dataset()
 
-        elif self.hparams.stage == "test":
+        elif stage == "test":
             self._set_up_test_dataset()
 
     def train_dataloader(self):
@@ -183,9 +183,11 @@ class LhotseDataModule(LightningDataModule):
         self.train_sampler = DynamicBucketingSampler(
             train_cut,
             max_duration=self.hparams.train_max_durations,
-            shuffle=True,
+            shuffle=False,
             drop_last=False,
             world_size=self.hparams.world_size,
+            concurrent=True,
+            buffer_size=50000,
         )
         log.info(f"train_sampler: {self.train_sampler}")
 

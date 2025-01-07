@@ -1,16 +1,12 @@
 import hydra
 import multiprocessing
-from typing import List
-
 import lightning.pytorch as pl
 
-from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 import dmel_codec
 from dmel_codec.utils.logger import RankedLogger
 from dmel_codec.utils.print_config import print_config_tree
 from dmel_codec.utils.utils import find_lastest_ckpt
-
 logger = RankedLogger(__name__, rank_zero_only=True)
 
 
@@ -56,7 +52,7 @@ def main(config: DictConfig) -> None:
         callbacks=callbacks, 
         logger=tensorboard_logger, 
         _convert_="partial", 
-        use_distributed_sampler=False # Custom bucket sampler, the use_distributed_sampler need to be set to False
+        use_distributed_sampler=False, # Custom bucket sampler, the use_distributed_sampler need to be set to False
     )
 
     latest_ckpt_path = find_lastest_ckpt(config.get("codec_ckpt_dir", None))
