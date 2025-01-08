@@ -36,6 +36,7 @@ ckpt/
 checkpoints/
 .vscode/
 *.npy
+*.gz
 test*
 hfd.sh
 fish_speech_configs/

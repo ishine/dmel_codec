@@ -9,8 +9,7 @@ from dmel_codec.evaluation.evaluation_utils import (
 )
 from speechbrain.inference.speaker import EncoderClassifier
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
-from dmel_codec.lhotse_tts_dataset import LhotseDataModule
-from tqdm import tqdm
+from dmel_codec.dataset.lhotse_tts_dataset import LhotseDataModule
 from dmel_codec.utils.logger import RankedLogger
 logger = RankedLogger(__name__)
 
