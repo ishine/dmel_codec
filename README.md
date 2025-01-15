@@ -10,6 +10,7 @@ An audio codec named dmel_codec
 # Run experiment
 
 
+# Citation
 ```bibtex
 @article{bai2024dmel,
   title={dmel: Speech tokenization made simple},
