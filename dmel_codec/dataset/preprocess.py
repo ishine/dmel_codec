@@ -3,13 +3,10 @@ import sys
 import os
 from lhotse import CutSet
 from lhotse import RecordingSet, SupervisionSet
-from lhotse.dataset.collation import maybe_pad
-from lhotse.serialization import load_jsonl
 from lightning import LightningDataModule
 from dmel_codec.utils.utils import open_filelist
 from dmel_codec.utils.logger import RankedLogger
 from lhotse import CutSet
-import random
 from time import time
 from tqdm import tqdm
 log = RankedLogger(__name__, rank_zero_only=False)
@@ -72,6 +69,7 @@ class LhotsePreProcess(LightningDataModule):
         min_duration: float | None = None,
         max_duration: float | None = None,
         num_jobs: int = 10,
+        shuffle_train_cuts: bool = False,
     ):
         """
         output_dir: str
@@ -541,7 +539,9 @@ class LhotsePreProcess(LightningDataModule):
         windows = self.hparams.window_size if self.hparams.window_size is not None else "None"
         min_duration = self.hparams.min_duration if self.hparams.min_duration is not None else "None"
         max_duration = self.hparams.max_duration if self.hparams.max_duration is not None else "None"
-        save_file_name = f"train_cuts_windows-{windows}_min_duration-{min_duration}_max_duration-{max_duration}.jsonl.gz"
+        shuffle_train_cuts = "True" if self.hparams.shuffle_train_cuts else "False"
+
+        save_file_name = f"train_cuts_windows-{windows}_min_duration-{min_duration}_max_duration-{max_duration}_shuffle-{shuffle_train_cuts}.jsonl.gz"
         all_cuts_duration = 0.0
         all_cuts_num = 0
         for cut in tqdm(self.train_cuts, desc="calculate train_cuts duration"):
@@ -549,6 +549,13 @@ class LhotsePreProcess(LightningDataModule):
             all_cuts_num += 1
         log.info(f"all cuts duration: {all_cuts_duration}")
         log.info(f"all cuts num: {all_cuts_num}")
+
+        # shuffle cuts
+        if self.hparams.shuffle_train_cuts:
+            log.info(f"shuffle train_cuts start")
+            self.train_cuts = self.train_cuts.shuffle(seed=666)
+            log.info(f"shuffle train_cuts success")
+
         self.train_cuts.to_file(
             os.path.join(self.hparams.output_dir, save_file_name)
         )
@@ -782,8 +789,9 @@ if __name__ == "__main__":
         num_jobs=40,
         sample_rate=24000,
         output_dir="/home/wzy/projects/dmel_codec",
-        stage="validate",
+        stage="fit",
         max_samples=128,
+        shuffle_train_cuts=True,
     )
 
     data_module.save_cutset()

@@ -8,6 +8,7 @@ from dmel_codec.utils.logger import RankedLogger
 from lhotse import CutSet
 import librosa
 import torch
+import warnings
 
 log = RankedLogger(__name__, rank_zero_only=False)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -80,7 +81,7 @@ class LhotseDataModule(LightningDataModule):
         val_num_workers: str | None = None,
         test_num_workers: str | None = None,
         pin_memory: bool = False,
-        world_size: int = 1,
+        world_size: int | None = None,
     ):
         """
         stage: fit, validate, test, required=True
@@ -133,7 +134,7 @@ class LhotseDataModule(LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(
-            self.train_dataset,
+            dataset=self.train_dataset,
             sampler=self.train_sampler,
             num_workers=self.hparams.train_num_workers,
             pin_memory=self.hparams.pin_memory,
@@ -142,7 +143,7 @@ class LhotseDataModule(LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader(
-            self.val_dataset,
+            dataset=self.val_dataset,
             sampler=self.val_sampler,
             num_workers=self.hparams.val_num_workers,
             pin_memory=self.hparams.pin_memory,
@@ -151,7 +152,7 @@ class LhotseDataModule(LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(
-            self.test_dataset,
+            dataset=self.test_dataset,
             sampler=self.test_sampler,
             num_workers=self.hparams.test_num_workers,
             pin_memory=self.hparams.pin_memory,
@@ -186,7 +187,6 @@ class LhotseDataModule(LightningDataModule):
             shuffle=False,
             drop_last=False,
             world_size=self.hparams.world_size,
-            concurrent=True,
             buffer_size=50000,
         )
         log.info(f"train_sampler: {self.train_sampler}")
@@ -218,36 +218,40 @@ class LhotseDataModule(LightningDataModule):
         log.info(f"test_sampler: {self.test_sampler}")
 
 if __name__ == "__main__":
+    from tqdm import tqdm
     # test
     data_module = LhotseDataModule(
         stage = 'fit',
         train_cuts_path='/home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz',
         val_cuts_path='/home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz',
-        train_max_durations=60,
+        train_max_durations=210,
         val_max_durations=5,
-        train_num_workers=4,
+        train_num_workers=10,
         val_num_workers=1,
-        world_size=1
     )
 
-    data_module.setup()
+    data_module.setup('fit')
     train_loader = data_module.train_dataloader()
     log.info(f"train_loader: {train_loader}")
     cnt = 0
-    for batch in train_loader:
-        log.info(f"train stage cnt: {cnt}")
-        log.info(batch.keys())
-        # log.info(f"train stage text: {batch['text']}")
-        log.info(f"train stage audios: {batch['audios'].shape}")
-        log.info(f"train stage audio_lengths: {batch['audio_lengths'].shape}")
-        log.info(f"train stage audio_lengths: {batch['audio_lengths']}")
-        # log.info(f"train stage audio_paths: {batch['audio_paths']}")
+    import time
+    start_time = time.time()
+    for batch in tqdm(train_loader):
+        if cnt % 1000 == 0:
+            end_time = time.time()
+            log.info(f"data loading time: {end_time - start_time}")
+            start_time = end_time
+            log.info(f"train stage cnt: {cnt}")
+            log.info(batch.keys())
+            # log.info(f"train stage text: {batch['text'][0]}")
+            log.info(f"train stage audios: {batch['audios'].shape}")
+            # log.info(f"train stage audio_lengths: {batch['audio_lengths'].shape}")
+            # log.info(f"train stage audio_lengths: {batch['audio_lengths']}")
+            # log.info(f"train stage audio_paths: {batch['audio_paths'][-5:]}")
 
         cnt += 1
-        if cnt > 10:
-            break
 
-    data_module.setup()
+    data_module.setup('validate')
     val_loader = data_module.val_dataloader()
     log.info(f"val_loader: {val_loader}")
     cnt = 0
