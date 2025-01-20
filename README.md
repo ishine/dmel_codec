@@ -3,9 +3,10 @@ An audio codec named dmel_codec
 
 # Environment build
 1. conda create -n dmel_codec python=3.10
-2. git clone https://github.com/wuzhiyue111/dmel_codec.git
-3. cd dmel_codec
-4. bash mkenv.bash
+2. conda activate dmel_codec
+3. git clone https://github.com/wuzhiyue111/dmel_codec.git
+4. cd dmel_codec
+5. bash mkenv.bash
 
 # Run experiment
 
