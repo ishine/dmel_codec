@@ -2,11 +2,10 @@ import logging
 import sys
 import os
 from lhotse import CutSet
-from lhotse import RecordingSet, SupervisionSet
+from lhotse import RecordingSet, SupervisionSet, CutSet, MonoCut, Recording
 from lightning import LightningDataModule
 from dmel_codec.utils.utils import open_filelist
 from dmel_codec.utils.logger import RankedLogger
-from lhotse import CutSet
 from time import time
 from tqdm import tqdm
 log = RankedLogger(__name__, rank_zero_only=False)
@@ -109,9 +108,37 @@ class LhotsePreProcess(LightningDataModule):
 
         self.hparams_check()  # check hparams and load filelist if filelist is not None
 
+    def simplify_cut(self, cut):
+        # 保留原始的 AudioSource
+        audio_source = cut.recording.sources[0]
+        
+        # 创建简化版的 Recording
+        simplified_recording = Recording(
+            id=cut.recording.id,
+            sources=[audio_source],
+            sampling_rate=cut.recording.sampling_rate,
+            num_samples=cut.recording.num_samples,
+            duration=cut.duration,
+            channel_ids=cut.recording.channel_ids
+        )
+        
+        # 创建简化版的 Cut
+        simplified_cut = MonoCut(
+            id=cut.id,
+            start=cut.start,
+            duration=cut.duration,
+            channel=cut.channel,
+            recording=simplified_recording
+        )
+        
+        return simplified_cut
+        
+
     def process_cuts_for_train(self, cuts: CutSet):
         log.info(f"original cuts: {cuts}")
         cuts = cuts.to_eager()
+        cuts = cuts.map(self.simplify_cut)
+        
         if self.hparams.window_size is not None:
             start_time = time()
             cuts = cuts.cut_into_windows(duration=self.hparams.window_size, num_jobs=self.hparams.num_jobs)
