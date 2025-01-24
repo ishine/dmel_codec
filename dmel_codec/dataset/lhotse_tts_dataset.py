@@ -34,10 +34,8 @@ class LhotseTTSDataset(Dataset):
             audio_lens.append(audio.shape[0])
             audio_paths.append(audio_path)
 
-        text = [cut.supervisions[0].text for cut in cuts]
 
         return {
-            "text": text,
             "audios": audio_list,
             "audio_lengths": torch.tensor(audio_lens, dtype=torch.int32),
             "audio_paths": audio_paths,
