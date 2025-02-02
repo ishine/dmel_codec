@@ -13,9 +13,9 @@ logger = RankedLogger(__name__, rank_zero_only=True)
 def get_config():
     try:
         base_path = dmel_codec.__path__[0]
-        base_config = OmegaConf.load(f"{base_path}/config/dMel_used.yaml")
+        base_config = OmegaConf.load(f"{base_path}/config/codec/dMel_used.yaml")
         for special_config_path in base_config.defaults[1:]:
-            special_config = OmegaConf.load(f"{base_path}/config/{special_config_path}")
+            special_config = OmegaConf.load(f"{base_path}/config/codec/{special_config_path}")
             base_config = OmegaConf.merge(base_config, special_config)
         return base_config
 
