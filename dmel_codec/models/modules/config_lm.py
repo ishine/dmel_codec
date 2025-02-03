@@ -16,7 +16,7 @@
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
-from dataclasses import dataclass
+from transformers.modeling_rope_utils import rope_config_validation
 
 
 
@@ -108,6 +108,7 @@ class Qwen2Config(PretrainedConfig):
         use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
+        rope_scaling=None,
         use_sliding_window=False,
         sliding_window=4096,
         max_window_layers=28,
@@ -116,21 +117,14 @@ class Qwen2Config(PretrainedConfig):
         # 新增配置项
         audio_codebook_count=8,
         audio_codebook_size=1024,
-        text_modality_manbaout_token_id=0,
-        audio_modality_manbaout_token_id=0,
-        text_loss_weight=1.0,
-        audio_loss_weight=1.0,
-        audio_token_original_embed_dim = 3840,
-        audio_silence_id=None,
+        text_modality_mambaout_token_id=0,
+        slow_audio_modality_mambaout_token_id=0,
         start_of_human_id=None,
         end_of_human_id=None,
         start_of_robot_id=None,
         end_of_robot_id=None,
         start_of_music_id=None,
         end_of_music_id=None,
-        lora_config = None,
-        qwen2_mllm_from_pretrain = None,
-        qwen2_text_base = None,
         loss_type = "ForCausalLM",
         **kwargs,
     ):
@@ -155,10 +149,15 @@ class Qwen2Config(PretrainedConfig):
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
+        self.rope_scaling = rope_scaling
+        
+        if self.rope_scaling is not None and "type" in self.rope_scaling:
+            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
+        rope_config_validation(self)
 
         # 新增配置项
+        self.text_modality_mambaout_token_id = text_modality_mambaout_token_id
         self.audio_codebook_count = audio_codebook_count
-        self.audio_silence_id = audio_silence_id
         self.start_of_human_id = start_of_human_id
         self.end_of_human_id = end_of_human_id
         self.start_of_robot_id = start_of_robot_id
@@ -166,14 +165,7 @@ class Qwen2Config(PretrainedConfig):
         self.start_of_music_id = start_of_music_id
         self.end_of_music_id = end_of_music_id
         self.audio_codebook_size = audio_codebook_size
-        self.audio_token_original_embed_dim = audio_token_original_embed_dim
-        self.text_modality_manbaout_token_id = text_modality_manbaout_token_id
-        self.audio_modality_manbaout_token_id = audio_modality_manbaout_token_id
-        self.text_loss_weight = text_loss_weight
-        self.audio_loss_weight = audio_loss_weight
-        self.lora_config = lora_config
-        self.qwen2_mllm_from_pretrain = qwen2_mllm_from_pretrain
-        self.qwen2_text_base = qwen2_text_base
+        self.slow_audio_modality_mambaout_token_id = slow_audio_modality_mambaout_token_id
         self.loss_type = loss_type
 
         super().__init__(
@@ -188,25 +180,27 @@ class FastQwen2ModelArgs(PretrainedConfig):
 
     def __init__(
         self,
-        slow_lm_hidden_size = 4096,
-        vocab_size = 151936,
-        max_position_embeddings = 32768,
-        hidden_size = 4096,
-        intermediate_size = 22016,
-        num_hidden_layers = 32,
-        num_attention_heads = 32,
-        use_sliding_window = False,
-        sliding_window = 4096,
-        max_window_layers = 28,
-        hidden_act = "silu",
-        initializer_range = 0.02,
-        rms_norm_eps = 1e-6,
-        use_cache = True,
-        rope_theta = 10000.0,
         attention_dropout = 0.0,
-        loss_type = "ForCausalLM",
+        slow_lm_hidden_size = 896,
         codebook_nums = 10,
-        tie_word_embeddings = False,
+        hidden_act = "silu",
+        hidden_size = 480,
+        initializer_range = 0.02,
+        intermediate_size = 2880,
+        max_position_embeddings = 131072,
+        max_window_layers = 12,
+        num_attention_heads = 10,
+        num_hidden_layers = 12,
+        num_key_value_heads = 2,
+        rms_norm_eps = 1e-06,
+        rope_theta = 1000000.0,
+        sliding_window = 131072,
+        tie_word_embeddings = True,
+        use_cache = True,
+        use_sliding_window = False,
+        rope_scaling = None,
+        vocab_size = 175,
+        loss_type = "ForCausalLM",
         **kwargs,
     ):
         self.slow_lm_hidden_size = slow_lm_hidden_size
@@ -219,7 +213,7 @@ class FastQwen2ModelArgs(PretrainedConfig):
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window
         self.max_window_layers = max_window_layers
-
+        self.rope_scaling = rope_scaling
         # for backward compatibility
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
@@ -231,6 +225,10 @@ class FastQwen2ModelArgs(PretrainedConfig):
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
+
+        if self.rope_scaling is not None and "type" in self.rope_scaling:
+            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
+        rope_config_validation(self)
         
         # audio
         self.codebook_nums = codebook_nums

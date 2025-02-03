@@ -17,8 +17,8 @@
     "sliding_window": 131072,
     "tie_word_embeddings": true,
     "torch_dtype": "bfloat16",
-    "transformers_version": "4.40.1",
+    "transformers_version": "4.47.1",
     "use_cache": true,
     "use_sliding_window": false,
-    "vocab_size": 175
+    "vocab_size": 1800
 }
