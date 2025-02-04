@@ -1,142 +1,121 @@
 import lightning.pytorch as pl
+from typing import Any, Optional, Tuple
+from torch import nn as nn
+from dmel_codec.models.modules.config_lm import Qwen2Config, FastQwen2ModelArgs
+from dmel_codec.models.modules.lm import (
+    ChatMusicForCausalLM,
+    MultiModalCausalLMOutputWithPast,
+)
+from dmel_codec.utils.logger import RankedLogger
+from dmel_codec.models.modules.lm_process_input import ProcessInputs
+from safetensors.torch import load_file
+import torch
+import os
+from einops import rearrange
+from transformers.models.qwen2 import Qwen2Tokenizer
+from torch.nn.utils.rnn import pad_sequence
+from abc import abstractmethod
 
+SOFTMAX_IGNORE_INDEX = -100
+log = RankedLogger(__name__, rank_zero_only=True)
 
 
 class MusicLLM(pl.LightningModule):
     def __init__(
         self,
-        llm_config_path: str,
-        optimizer: Any,
-        lr_scheduler: Any,
+        slow_lm_config_path: str,
+        fast_lm_config_path: str,
         # Codec
         codec_model: nn.Module,
         # Other parameters
         silence_length: int,
+        audio_silence_id: list,
         max_length: int,
-        is_strict: bool,
+        optimizer: Any = None,
+        lr_scheduler: Any = None,
+        is_strict: bool = False,
+        text_foundation_model_path: str | None = None,
+        text_tokenizer_path: str | None = None,
+        mllm_model_path: str | None = None,
+        model_dtype: str = "bfloat16",
     ):
         super().__init__()
-        # 原生最大词表利用到151643, 最大长度是151936
 
-        config = Qwen2Config.from_pretrained(llm_config_path)
-        self.config = config
-        self.lora_config = config.lora_config
+        slow_lm_config = Qwen2Config.from_pretrained(slow_lm_config_path)
+        fast_lm_config = FastQwen2ModelArgs.from_pretrained(fast_lm_config_path)
+
         self.optimizer_builder = optimizer
         self.lr_scheduler_builder = lr_scheduler
         self.strict_loading = is_strict
-        model = ChatMusicQwen2ForCausalLM(config)
-        if config.qwen2_mllm_from_pretrain is None:
-            assert config.qwen2_text_base is not None
+        model = ChatMusicForCausalLM(slow_lm_config, fast_lm_config)
+        if mllm_model_path is None:
+            assert text_foundation_model_path is not None
             log.info("Loading qwen2 text base model from pretrained checkpoints")
-            model.load_state_dict(
-                load_file(config.qwen2_text_base, device="cpu"), strict=False
+            if text_foundation_model_path.endswith(".safetensors"):
+                model.load_state_dict(
+                    load_file(text_foundation_model_path, device="cpu"), strict=False
+                )
+
+            else:
+                model.load_state_dict(
+                    load_file(
+                        os.path.join(text_foundation_model_path, "model.safetensors"),
+                        device="cpu",
+                    ),
+                    strict=False,
+                )
+            log.info(
+                f"Loading qwen2 mllm model from {text_foundation_model_path} successfully"
             )
-            log.info(f"Loading qwen2 mllm model from {config.qwen2_text_base}")
-            zero_tensor = torch.zeros_like(
-                model.model.embed_tokens.weight[config.text_modality_manbaout_token_id]
-            ).detach()
-            model.model.embed_tokens.weight.data[config.text_modality_manbaout_token_id] = zero_tensor
-            
-            self.model = model
+
         else:
             log.info("Loading qwen2 mllm model from pretrained checkpoints")
-            self.model = model
+
+        self.model = model
 
         self.max_length = max_length
         self.silence_length = silence_length
-        # self.codec_model = self.load_codec_model(
-        #     codec_experiment=codec_experiment,
-        #     codec_vocoder_config_path=codec_vocoder_config_path,
-        #     codec_config_dir=codec_config_dir,
-        #     codec_ckpt_path=codec_ckpt_path,
-        # )
+        text_tokenizer = Qwen2Tokenizer.from_pretrained(text_tokenizer_path)
+
+        # codec
         self.codec_model = codec_model
-        self.process_inputs_cls = ProcessInputs(self.config, max_length)
-
-    @staticmethod
-    def get_codec_config(
-        codec_experiment: str,
-        codec_vocoder_config_path: str,
-        codec_config_dir: str,
-        dtype: str | torch.dtype,
-    ):
-        cfg = None
-        with initialize_config_dir(
-            config_dir=codec_config_dir, job_name="load_codec_model"
-        ):
-            cfg = compose(
-                config_name="train",
-                overrides=[
-                    f"experiment={codec_experiment}",
-                    "+dmel_vocoder_ckpt_path=null",
-                    f"+dmel_vocoder_config_path='{codec_vocoder_config_path}'",
-                    f"+model.dtype={dtype}",
-                ],
-            )
-        OmegaConf.resolve(cfg)
-        return OmegaConf.to_yaml(cfg)
-
-    @staticmethod
-    def load_codec_model(
-        codec_experiment: str = "dmel_pertrain_ngroups10_ncodebooks1_levels86_downsample22_encoderresiduallayers16",
-        codec_vocoder_config_path: str = "/home/wzy/projects/bigvgan_v2_24khz_100band_256x/config.json",
-        codec_config_dir: str = "/home/wzy/projects/zh_dmel_chat_music/dmel_codec/config/",
-        codec_ckpt_path: str = "/home/wzy/projects/checkpoints/epoch=243-step=635000_20hz.ckpt",
-        dtype: torch.dtype | str = "bfloat16",
-    ):
-        if isinstance(dtype, str):
-            dtype = getattr(torch, dtype)
-        codec_model = None
-        from hydra.core.global_hydra import GlobalHydra
-
-        GlobalHydra.instance().clear()
-        with initialize_config_dir(
-            config_dir=codec_config_dir, job_name="load_codec_model"
-        ):
-            cfg = compose(
-                config_name="train",
-                overrides=[
-                    f"experiment={codec_experiment}",
-                    "+dmel_vocoder_ckpt_path=null",
-                    f"+dmel_vocoder_config_path='{codec_vocoder_config_path}'",
-                    f"+model.dtype={dtype}",
-                ],
-            )
-            if cfg is None:
-                raise ValueError("Codec config is None")
-            codec_model = hydra.utils.instantiate(
-                cfg.model,
-            )
-
-        if codec_model is None:
-            raise ValueError("Codec model is None")
-
-        if codec_ckpt_path == None:
-            pass
-        else:
-            codec_model.load_state_dict(
-                torch.load(
-                    codec_ckpt_path,
-                    map_location="cpu",
-                )["state_dict"],
-                strict=False,
-            )
-            log.info('codec ckpt read succesfully')
-        codec_model.eval()
-        for param in codec_model.parameters():
+        for _, param in self.codec_model.named_parameters():
             param.requires_grad = False
-        codec_model = codec_model.to(dtype=dtype)
-        return codec_model
+            param.to()
 
-    def get_accuracy(self, logits, labels):
-        _, indices = logits.topk(5, dim=-1)
-        correct = indices.eq(labels.unsqueeze(-1))
-        correct[labels == SOFTMAX_IGNORE_INDEX] = 0
-        correct = correct.sum()
-        accuracy = correct / (labels != SOFTMAX_IGNORE_INDEX).sum()
-        return accuracy
+        if model_dtype == "bfloat16":
+            self.codec_model.to(torch.bfloat16)
+            self.model.to(torch.bfloat16)
+        elif model_dtype == "float16":
+            self.codec_model.to(torch.float16)
+            self.model.to(torch.float16)
+        else:
+            raise ValueError(f"Unsupported model dtype: {model_dtype}")
 
-    def configure_optimizers(self) -> OptimizerLRScheduler:
+        self.slow_lm_config: Qwen2Config = slow_lm_config
+        self.fast_lm_config: FastQwen2ModelArgs = fast_lm_config
+
+        self.process_inputs_cls = ProcessInputs(
+            config=slow_lm_config,
+            max_length=max_length,
+            silence_length=silence_length,
+            audio_silence_id=audio_silence_id,
+            text_tokenizer=text_tokenizer,
+        )
+
+    def get_accuracy(self, logits, labels, ignore_index=SOFTMAX_IGNORE_INDEX, topk: list[int]=[1, 5]):
+        logits = logits[:, :, :-1, :] # token shift
+        accuracy_list = []
+        for k in topk:
+            _, indices = logits.topk(k, dim=-1)
+            correct = indices.eq(labels.unsqueeze(-1))
+            correct[labels == ignore_index] = 0
+            correct = correct.sum()
+            accuracy = correct / (labels != ignore_index).sum()
+            accuracy_list.append(accuracy)
+        return accuracy_list
+
+    def configure_optimizers(self):
         # Get weight decay parameters
         weight_decay_parameters, other_parameters = [], []
         for name, param in self.named_parameters():
@@ -168,83 +147,47 @@ class MusicLLM(pl.LightningModule):
             },
         }
 
-    def get_embeds_from_inputs_ids(self, text_logits_list, audio_logits_list):
+    def get_embeds_from_inputs_ids(self, text_logits, audio_logits):
         """
-        text_logits_list: 二维数组
-        audio_logits_list: 二维数组
+        text_logits: [T]
+        audio_logits: [T, codebook_num]
         """
-        text_embeds_list = []
-        for text_logits in text_logits_list:
-            if (text_logits == self.config.text_modality_manbaout_token_id).all():
-                with torch.no_grad():
-                    text_embeds_list.append(self.model.model.embed_tokens(text_logits))
-            else:
-                text_embeds_list.append(self.model.model.embed_tokens(text_logits))
+        text_embeds = self.model.slow_model.embed_tokens(text_logits)
 
-        audio_embeds_list = []
-        for audio_logits in audio_logits_list:
-            if (audio_logits == self.config.text_modality_manbaout_token_id).all():
-                with torch.no_grad():
-                    audio_embeds_list.append(
-                        self.model.model.audio_embeddings(audio_logits)
-                    )
-            else:
-                audio_embeds_list.append(
-                    self.model.model.audio_embeddings(audio_logits)
-                )
-
-        with torch.no_grad():
-            text_embeds = torch.cat(text_embeds_list, dim=0)
-            audio_embeds = torch.cat(audio_embeds_list, dim=0)
-
-        audio_embeds = rearrange(
-            audio_embeds,
-            "s c d -> s (c d)",
-            c=self.config.audio_codebook_count,
-            d=self.config.audio_token_original_embed_dim,
+        audio_inputs_embeds = self.model.slow_model.slow_lm_audio_emb(audio_logits)
+        seq_len, codebook_num, hidden_size = audio_inputs_embeds.shape
+        audio_inputs_embeds = audio_inputs_embeds.view(
+            seq_len, codebook_num * hidden_size
         )
 
-        audio_embeds = self.model.model.audio_embeddings_projector(audio_embeds)
+        audio_embeds = self.model.slow_model.slow_audio_hiddenstate_projector(
+            audio_inputs_embeds
+        )
 
         return text_embeds + audio_embeds
-
-    def pad_embed_sequence(self, embeds_list, padding_value):
-        """
-        embeds_list: [embeds1, embeds2]
-        embeds1.shape = (seq_len, hidden_state)
-        """
-        max_len = max(embeds.shape[0] for embeds in embeds_list)
-
-        padded_embeds = torch.full(
-            size=(len(embeds_list), max_len, embeds_list[0].shape[-1]),
-            fill_value=padding_value,
-            dtype=self.model.dtype,
-            device=self.model.device,
-        )
-        for i, embeds in enumerate(embeds_list):
-            pad_len = max_len - embeds.shape[0]
-            padded_embed = torch.nn.functional.pad(embeds, (0, 0, 0, pad_len))
-            padded_embeds[i] = padded_embed
-
-        return padded_embeds
 
     def process_all_input(self, batch):
         inputs_embeds_list = []
         labels_list = []
-        for item in batch:
+        for i in range(len(batch["text"])):
+            item = {
+                "text": batch["text"][i],
+                "audios": batch["audios"][i],
+                "audio_lengths": batch["audio_lengths"][0][i].item(),
+            }
             (text_modality_tokens, audio_modality_tokens, labels) = (
                 self.process_inputs_cls.get_input_label(
                     item, self.codec_model, self.codec_model.device
                 )
             )
 
-            labels_list.append(labels.T)
+            labels_list.append(labels)
             input_embeds = self.get_embeds_from_inputs_ids(
                 text_modality_tokens, audio_modality_tokens
             )
             inputs_embeds_list.append(input_embeds)
 
-        inputs_embeds = self.pad_embed_sequence(inputs_embeds_list, padding_value=0)
+        inputs_embeds = pad_sequence(inputs_embeds_list, batch_first=True, padding_value=0)
         labels = pad_sequence(
             labels_list, batch_first=True, padding_value=SOFTMAX_IGNORE_INDEX
         )
@@ -253,7 +196,7 @@ class MusicLLM(pl.LightningModule):
 
     def _step(self, batch, batch_idx, stage="train"):
         is_train = stage == "train"
-        if is_train == "train":
+        if is_train:
             self.model.train()
 
         # start_time = time()
@@ -264,13 +207,11 @@ class MusicLLM(pl.LightningModule):
         #     f"stage: {stage} / get_input_label time: {time() - start_time}"
         # )  # time for codec.encode
 
-        start_time = time()
         multimodel_causual_output: MultiModalCausalLMOutputWithPast = self.model(
             inputs_embeds=inputs_embeds,
             text_labels=text_labels,
             audio_labels=audio_labels,
         )
-        # log.info(f"stage: {stage} / forward time: {time() - start_time}")
 
         self.log(
             f"{stage}/llm_loss",
@@ -304,25 +245,28 @@ class MusicLLM(pl.LightningModule):
             sync_dist=not is_train,
             rank_zero_only=True,
         )
-
-        audio_logits = multimodel_causual_output.audio_logits.transpose(1, 2)
-
-        accuracy = self.get_accuracy(audio_logits, audio_labels)
-        self.log(
-            f"{stage}/top_5_accuracy",
-            accuracy,
+        
+        topk_list = [1, 2, 5, 10, 20]
+        accuracy_list = self.get_accuracy(multimodel_causual_output.audio_logits, audio_labels, ignore_index=SOFTMAX_IGNORE_INDEX, topk=topk_list)
+        for k, accuracy in zip(topk_list, accuracy_list):
+            self.log(
+                f"{stage}/top_{k}_accuracy",
+                accuracy,
             on_step=is_train,
             on_epoch=not is_train,
             prog_bar=True,
             logger=True,
             sync_dist=not is_train,
             rank_zero_only=True,
-        )
+            )
 
         return multimodel_causual_output.loss
 
     def training_step(self, batch, batch_idx):
         return self._step(batch, batch_idx, stage="train")
+
+    def validation_step(self, batch, batch_idx):
+        return self._step(batch, batch_idx, stage="val")
 
     def on_save_checkpoint(self, checkpoint):
         if self.lora_config is None:
@@ -336,9 +280,9 @@ class MusicLLM(pl.LightningModule):
                 if "lora" not in name:
                     state_dict.pop(name)
 
-    def validation_step(self, batch, batch_idx):
-        return self._step(batch, batch_idx, stage="val")
 
+
+    # -------------------------- Inference --------------------------
     @torch.no_grad()
     @torch.inference_mode()
     def inference_by_audio_prompt(self, inference_config, wav):
@@ -382,7 +326,6 @@ class MusicLLM(pl.LightningModule):
 
         return wav.float().cpu().numpy()
 
-    @torch.no_grad()
     @torch.inference_mode()
     def inference_by_text_prompt(self, inference_config):
         text_logits = self.text_inference_input_processor(inference_config)
@@ -503,10 +446,7 @@ class MusicLLM(pl.LightningModule):
         return cur_generation_token_nums >= self.max_length
 
     def text_inference_input_processor(self, inference_config):
-        text_tokenizer = AutoTokenizer.from_pretrained(
-            inference_config.text_tokenizer_path
-        )
-        text_logits = text_tokenizer(inference_config.prompt, return_tensors="pt")[
+        text_logits = self.text_tokenizer(inference_config.prompt, return_tensors="pt")[
             "input_ids"
         ].to(self.model.device)
 
@@ -618,3 +558,54 @@ class MusicLLM(pl.LightningModule):
         # # 使用 torch.multinomial 进行采样
         idx_next = torch.multinomial(probs_sort, 1)
         return idx_next.to(dtype=torch.long)
+
+if __name__ == "__main__":
+    # test train code
+    from dmel_codec.dataset.lhotse_tts_dataset import LhotseDataModule
+    from functools import partial
+    from dmel_codec.utils.schedule import get_cosine_schedule_with_warmup_lr_lambda
+    from dmel_codec.models.codec_lit_modules import VQGAN
+    import hydra
+    from omegaconf import DictConfig, OmegaConf
+
+    dataset = LhotseDataModule(
+        stage="validate",
+        val_cuts_path="/home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz",
+        world_size=1,
+        val_max_durations=40,
+        val_num_workers=1,
+    )
+    dataset.setup("validate")
+    val_dataloader = dataset.val_dataloader()
+    optimizer = partial(
+        torch.optim.AdamW, lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=0.01
+    )
+    cosine_warmup = partial(
+        get_cosine_schedule_with_warmup_lr_lambda,
+        num_training_steps=1000000,
+        num_warmup_steps=2000,
+        final_lr_scale=0.01,
+    )
+    lr_scheduler = partial(torch.optim.lr_scheduler.LambdaLR, lr_lambda=cosine_warmup)
+
+    config = OmegaConf.load(
+        "/home/wzy/projects/dmel_codec/dmel_codec/config/lm/lm_config.yaml"
+    )
+    codec_model = hydra.utils.instantiate(config.model.codec_model, _convert_="partial")
+    model = MusicLLM(
+        slow_lm_config_path="/home/wzy/projects/dmel_codec/dmel_codec/config/lm/slow_lm_0.5B.json",
+        fast_lm_config_path="/home/wzy/projects/dmel_codec/dmel_codec/config/lm/fast_lm.json",
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        codec_model=codec_model,
+        silence_length=3,
+        audio_silence_id=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        max_length=4096,
+        is_strict=False,
+        text_foundation_model_path="/sdb/model_weight/qwen2-0.5B",
+        text_tokenizer_path="/sdb/model_weight/qwen2-0.5B",
+        mllm_model_path=None,
+    )
+    for batch in val_dataloader:
+        a = model._step(batch, 0)
+        print(a)

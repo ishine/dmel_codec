@@ -1,0 +1,124 @@
+dtype: bfloat16
+codec_latent_dim: 700
+
+# codec
+n_fft: 1024
+hop_length: 256
+win_length: 1024
+num_mels: 100
+sample_rate: 24000
+
+trainer:
+  _target_: lightning.pytorch.Trainer
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: 'norm'
+  max_steps: 300_000
+  val_check_interval: 2000
+  log_every_n_steps: 50
+
+model:
+  _target_: dmel_codec.models.lm_lit_modules.MusicLLM
+  slow_lm_config_path: "/home/wzy/projects/dmel_codec/dmel_codec/config/lm/slow_lm_0.5B.json"
+  fast_lm_config_path: "/home/wzy/projects/dmel_codec/dmel_codec/config/lm/fast_lm.json"
+  text_foundation_model_path: "/sdb/model_weight/qwen2-0.5B"
+  text_tokenizer_path: "/sdb/model_weight/qwen2-0.5B"
+  model_dtype: ${dtype}
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+    betas: [0.8, 0.99]
+    eps: 1e-5
+    weight_decay: 0.01
+  
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.LambdaLR
+    lr_lambda:
+      _target_: dmel_codec.utils.schedule.get_cosine_scheule_with_warmup_lr_lambda
+      _partial_: true
+      num_warmup_steps: 2000
+      num_training_steps: ${trainer.max_steps}
+      final_lr_ratio: 0.2
+
+  codec_model:
+    _target_: dmel_codec.models.codec_lit_modules.VQGAN
+    dtype: ${dtype}
+    dmel_groups: 10
+    quanlity_linear: ${codec_latent_dim}
+    sampling_rate: ${sample_rate}
+
+    encoder:
+      _target_: dmel_codec.models.modules.wavenet.WaveNet
+      input_channels: 10
+      residual_channels: 70
+      residual_layers: 8
+      dilation_cycle: 4
+
+    quantizer:
+      _target_: dmel_codec.models.modules.dowmsample_fsq.DownsampleFiniteScalarQuantize
+      input_dim: ${codec_latent_dim}
+      n_codebooks: 1
+      n_groups: 10
+      levels:
+      - 8
+      - 6
+      is_dmel: true
+      downsample_factor:
+      - 2
+      - 2
+
+    vocoder:
+      _target_: dmel_codec.models.modules.bigvgan.bigvgan.BigVGAN
+      ckpt_path: null
+      h_path: /home/wzy/projects/bigvgan_v2_24khz_100band_256x/config.json
+    
+    encode_mel_transform:
+      _target_: dmel_codec.utils.spectrogram.LogMelSpectrogram
+      sample_rate: ${sample_rate}
+      n_fft: ${n_fft}
+      hop_length: ${hop_length}
+      win_length: ${win_length}
+      n_mels: ${num_mels}
+      f_min: 0
+      f_max: 12000
+
+    gt_mel_transform:
+      _target_: dmel_codec.utils.spectrogram.LogMelSpectrogram
+      sample_rate: ${sample_rate}
+      n_fft: ${n_fft}
+      hop_length: ${hop_length}
+      win_length: ${win_length}
+      n_mels: ${num_mels}
+      f_min: 0
+      f_max: 12000
+
+callbacks:
+  learning_rate_monitor:
+    _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: step
+
+  rich_progress_bar:
+    _target_: lightning.pytorch.callbacks.RichProgressBar
+
+  model_summary:
+    _target_: lightning.pytorch.callbacks.ModelSummary
+    max_depth: 1
+
+  model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val/audio_loss
+    mode: min
+    every_n_train_steps: ${trainer.val_check_interval}
+    # every_n_epochs: 1
+    dirpath: /home/wzy/projects/dmel_codec/ckpt/lm
+    filename: '{epoch:03d}-{step:06d}'
+    save_top_k: 3
+    verbose: True
+
+tensorboard_logger:
+  _target_: lightning.pytorch.loggers.TensorBoardLogger
+  save_dir: /home/wzy/projects/dmel_codec/tb_logs
+  name: dmel_codec_lm
+  log_graph: true

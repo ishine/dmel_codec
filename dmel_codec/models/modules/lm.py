@@ -11,7 +11,7 @@ from transformers.loss.loss_utils import ForCausalLMLoss
 from dmel_codec.utils.logger import RankedLogger
 
 log = RankedLogger(__name__, rank_zero_only=True)
-
+SOFTMAX_IGNORE_INDEX = -100
 
 @dataclass
 class MultiModalCausalLMOutputWithPast(ModelOutput):
@@ -60,20 +60,21 @@ class ChatMusicSlowLMModel(Qwen2Model):
 
     def forward(
         self,
-        text_inputs_ids: Optional[torch.LongTensor],
-        audio_inputs_ids: Optional[torch.LongTensor],
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        # text_inputs_ids: Optional[torch.LongTensor],
+        # audio_inputs_ids: Optional[torch.LongTensor],
     ):
-        text_inputs_embeds = self.embed_tokens(text_inputs_ids)
-        audio_inputs_embeds = self.slow_lm_audio_emb(audio_inputs_ids)
+        # text_inputs_embeds = self.embed_tokens(text_inputs_ids)
+        # audio_inputs_embeds = self.slow_lm_audio_emb(audio_inputs_ids)
 
-        bs, seq_len, codebook_num, hidden_size = audio_inputs_embeds.shape
-        audio_inputs_embeds = audio_inputs_embeds.view(
-            bs, seq_len, codebook_num * hidden_size
-        )
-        audio_inputs_embeds = self.slow_audio_hiddenstate_projector(audio_inputs_embeds)
+        # bs, seq_len, codebook_num, hidden_size = audio_inputs_embeds.shape
+        # audio_inputs_embeds = audio_inputs_embeds.view(
+        #     bs, seq_len, codebook_num * hidden_size
+        # )
+        # audio_inputs_embeds = self.slow_audio_hiddenstate_projector(audio_inputs_embeds)
 
-        input_embeds = text_inputs_embeds + audio_inputs_embeds
-        return super().forward(inputs_embeds=input_embeds)
+        # inputs_embeds = text_inputs_embeds + audio_inputs_embeds
+        return super().forward(inputs_embeds=inputs_embeds)
 
 
 class ChatMusicFastLMModel(Qwen2Model):
@@ -81,6 +82,11 @@ class ChatMusicFastLMModel(Qwen2Model):
         super().__init__(config)
         self.fast_lm_config = config
         self.need_project = config.slow_lm_hidden_size != config.hidden_size
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size,
+            config.hidden_size,
+            config.audio_pad_token_id,
+        )
         if self.need_project:
             self.slow_lm_to_fast_lm_dim_projector = nn.Linear(
                 config.slow_lm_hidden_size, config.hidden_size
@@ -90,6 +96,13 @@ class ChatMusicFastLMModel(Qwen2Model):
 
     def forward(self, inp, labels):
         hidden_states = inp.last_hidden_state
+        
+        with torch.no_grad(): # 处理input，不涉及梯度计算
+            audio_inputs_ids = torch.where(
+                labels == SOFTMAX_IGNORE_INDEX,
+                self.fast_lm_config.audio_pad_token_id,
+                labels,
+            )
 
         if self.need_project:
             hidden_states = self.slow_lm_to_fast_lm_dim_projector(
@@ -97,7 +110,7 @@ class ChatMusicFastLMModel(Qwen2Model):
             )  # [bs, seq_len, hidden_size]
 
         codebook_embeddings = self.embed_tokens(
-            labels.clone()
+            audio_inputs_ids
         )  # [bs, seq_len, codebook_num, hidden_size]
         input_embeds = torch.cat(
             [hidden_states[:, :, None, :], codebook_embeddings], dim=2
@@ -133,18 +146,20 @@ class ChatMusicForCausalLM(nn.Module):
 
     def forward(
         self,
-        text_inputs_ids: Optional[torch.LongTensor] = None,
-        audio_inputs_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        # text_inputs_ids: Optional[torch.LongTensor] = None,
+        # audio_inputs_ids: Optional[torch.LongTensor] = None,
+        text_labels: Optional[torch.LongTensor] = None,
+        audio_labels: Optional[torch.LongTensor] = None,
         **loss_kwargs,
     ):
-        # text_labels: [bs, seq_len]
-        # audio_labels: [bs, seq_len, codebook_num]
+        # text_inputs_ids: [bs, seq_len]
+        # audio_inputs_ids: [bs, seq_len, codebook_num]
 
-        text_labels = text_inputs_ids.clone()
-        audio_labels = audio_inputs_ids.clone()
-        text_outputs = self.slow_model(
-            text_inputs_ids=text_inputs_ids, audio_inputs_ids=audio_inputs_ids
-        )
+        # text_outputs = self.slow_model(
+        #     text_inputs_ids=text_inputs_ids, audio_inputs_ids=audio_inputs_ids
+        # )
+        text_outputs = self.slow_model(inputs_embeds=inputs_embeds)
         audio_outputs = self.fast_model(text_outputs, audio_labels)
 
         text_hidden_states = text_outputs["last_hidden_state"]
@@ -157,31 +172,29 @@ class ChatMusicForCausalLM(nn.Module):
         text_loss = None
         audio_loss = None
 
-        if text_labels is not None:
-            text_loss = self.loss_function(
-                text_logits,
-                text_labels,
-                text_logits.shape[-1],
-                **loss_kwargs,
-            )
+        text_loss = self.loss_function(
+            text_logits,
+            text_labels,
+            text_logits.shape[-1],
+            **loss_kwargs,
+        )
 
-            if torch.isnan(text_loss) or torch.isinf(text_loss):
-                text_loss -= text_loss
-                log.info("Loss is nan or inf, setting to 0")
+        if torch.isnan(text_loss) or torch.isinf(text_loss):
+            text_loss -= text_loss
+            log.info("Loss is nan or inf, setting to 0")
 
-        if audio_labels is not None:
-            # audio_logits: [bs, seq_len, codebook_num + 1, vocab_size]
-            # audio_labels: [bs, seq_len, codebook_num], so we need to expand the first dim of audio_labels to [bs, seq_len, codebook_num + 1]
-            audio_labels = torch.cat([text_labels[:, :, None], audio_labels], dim=2)
-            audio_loss = self.loss_function(
-                audio_logits,
-                audio_labels,
-                audio_logits.shape[-1],
-                **loss_kwargs,
-            )
-            if torch.isnan(audio_loss) or torch.isinf(audio_loss):
-                audio_loss -= audio_loss
-                log.info("Audio Loss is nan or inf, setting to 0")
+        # audio_logits: [bs, seq_len, codebook_num + 1, vocab_size], 1 means the text modality semantic token
+        # audio_labels: [bs, seq_len, codebook_num], so we need to expand the first dim of audio_labels to [bs, seq_len, codebook_num + 1]
+        audio_labels = torch.cat([text_labels[:, :, None], audio_labels], dim=2)
+        audio_loss = self.loss_function(
+            audio_logits,
+            audio_labels,
+            audio_logits.shape[-1],
+            **loss_kwargs,
+        )
+        if torch.isnan(audio_loss) or torch.isinf(audio_loss):
+            audio_loss -= audio_loss
+            log.info("Audio Loss is nan or inf, setting to 0")
 
         # TODO: add weighted loss
         # weighted_loss = None

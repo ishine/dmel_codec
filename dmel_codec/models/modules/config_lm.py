@@ -200,6 +200,7 @@ class FastQwen2ModelArgs(PretrainedConfig):
         use_sliding_window = False,
         rope_scaling = None,
         vocab_size = 175,
+        audio_pad_token_id = 176,
         loss_type = "ForCausalLM",
         **kwargs,
     ):
@@ -225,6 +226,7 @@ class FastQwen2ModelArgs(PretrainedConfig):
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
+        self.audio_pad_token_id = audio_pad_token_id
 
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]

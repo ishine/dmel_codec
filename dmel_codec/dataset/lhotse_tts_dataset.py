@@ -19,11 +19,12 @@ class LhotseTTSDataset(Dataset):
         cuts = cuts.sort_by_duration(ascending=False)
 
         # same with bigvgan
+        text_list = []
         audio_list = []
         audio_lens = []
         audio_paths = []
         for cut in cuts:
-            # audio = np.array(audio_length, )
+            text = cut.supervisions[0].text
             audio_path = cut.recording.sources[0].source
             audio, _ = librosa.load(
                 audio_path, sr=cut.sampling_rate, mono=True, offset=cut.start, duration=cut.duration
@@ -33,9 +34,10 @@ class LhotseTTSDataset(Dataset):
             audio_list.append(audio)
             audio_lens.append(audio.shape[0])
             audio_paths.append(audio_path)
-
+            text_list.append(text)
 
         return {
+            "text": text_list,
             "audios": audio_list,
             "audio_lengths": torch.tensor(audio_lens, dtype=torch.int32),
             "audio_paths": audio_paths,
@@ -45,7 +47,7 @@ class LhotseTTSDataset(Dataset):
         audio_list = batch[0]["audios"]
         audio_lens = batch[0]["audio_lengths"]
         max_length = max(audio_lens)
-
+        
         # right pad audio
         audio_list = [
             torch.nn.functional.pad(audio, (0, max_length - audio.shape[-1]))
