@@ -1,5 +1,7 @@
 dtype: bfloat16
 codec_latent_dim: 700
+seed: 666
+lm_ckpt_dir: /home/wzy/projects/dmel_codec/ckpt/lm
 
 # codec
 n_fft: 1024
@@ -10,12 +12,26 @@ sample_rate: 24000
 
 trainer:
   _target_: lightning.pytorch.Trainer
+  accelerator: gpu
+  devices: [0]
+  precision: bf16
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
   max_steps: 300_000
   val_check_interval: 2000
   log_every_n_steps: 50
+
+data:
+  _target_: dmel_codec.dataset.lhotse_tts_dataset.LhotseDataModule
+  stage: fit
+  train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
+  val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
+  train_max_durations: 60
+  val_max_durations: 5
+  train_num_workers: 16
+  val_num_workers: 1
+  world_size: 1
 
 model:
   _target_: dmel_codec.models.lm_lit_modules.MusicLLM
@@ -24,6 +40,19 @@ model:
   text_foundation_model_path: "/sdb/model_weight/qwen2-0.5B"
   text_tokenizer_path: "/sdb/model_weight/qwen2-0.5B"
   model_dtype: ${dtype}
+  silence_length: 3
+  max_length: 4096
+  audio_silence_id:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -35,8 +64,9 @@ model:
   
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.LambdaLR
+    _partial_: true
     lr_lambda:
-      _target_: dmel_codec.utils.schedule.get_cosine_scheule_with_warmup_lr_lambda
+      _target_: dmel_codec.utils.schedule.get_cosine_schedule_with_warmup_lr_lambda
       _partial_: true
       num_warmup_steps: 2000
       num_training_steps: ${trainer.max_steps}
@@ -112,7 +142,7 @@ callbacks:
     mode: min
     every_n_train_steps: ${trainer.val_check_interval}
     # every_n_epochs: 1
-    dirpath: /home/wzy/projects/dmel_codec/ckpt/lm
+    dirpath: ${lm_ckpt_dir}
     filename: '{epoch:03d}-{step:06d}'
     save_top_k: 3
     verbose: True
@@ -120,5 +150,5 @@ callbacks:
 tensorboard_logger:
   _target_: lightning.pytorch.loggers.TensorBoardLogger
   save_dir: /home/wzy/projects/dmel_codec/tb_logs
-  name: dmel_codec_lm
+  name: lm
   log_graph: true

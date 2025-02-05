@@ -1,5 +1,5 @@
 import lightning.pytorch as pl
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 from torch import nn as nn
 from dmel_codec.models.modules.config_lm import Qwen2Config, FastQwen2ModelArgs
 from dmel_codec.models.modules.lm import (
@@ -11,10 +11,8 @@ from dmel_codec.models.modules.lm_process_input import ProcessInputs
 from safetensors.torch import load_file
 import torch
 import os
-from einops import rearrange
 from transformers.models.qwen2 import Qwen2Tokenizer
 from torch.nn.utils.rnn import pad_sequence
-from abc import abstractmethod
 
 SOFTMAX_IGNORE_INDEX = -100
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -103,15 +101,23 @@ class MusicLLM(pl.LightningModule):
             text_tokenizer=text_tokenizer,
         )
 
-    def get_accuracy(self, logits, labels, ignore_index=SOFTMAX_IGNORE_INDEX, topk: list[int]=[1, 5]):
+    def get_accuracy(self, logits, labels, ignore_index=[SOFTMAX_IGNORE_INDEX, 179], topk: list[int]=[1, 5]):
         logits = logits[:, :, :-1, :] # token shift
         accuracy_list = []
+        
+        # 创建掩码，标记不需要忽略的位置
+        valid_mask = torch.ones_like(labels, dtype=torch.bool)
+        for ignore_id in ignore_index:
+            valid_mask &= (labels != ignore_id)
+
         for k in topk:
             _, indices = logits.topk(k, dim=-1)
             correct = indices.eq(labels.unsqueeze(-1))
-            correct[labels == ignore_index] = 0
+            for ignore_id in ignore_index:
+                correct[labels == ignore_id] = 0
             correct = correct.sum()
-            accuracy = correct / (labels != ignore_index).sum()
+            # 使用valid_mask计算有效标签的数量
+            accuracy = correct / valid_mask.sum()
             accuracy_list.append(accuracy)
         return accuracy_list
 
@@ -198,6 +204,8 @@ class MusicLLM(pl.LightningModule):
         is_train = stage == "train"
         if is_train:
             self.model.train()
+        else:
+            self.model.eval()
 
         # start_time = time()
 
@@ -247,7 +255,8 @@ class MusicLLM(pl.LightningModule):
         )
         
         topk_list = [1, 2, 5, 10, 20]
-        accuracy_list = self.get_accuracy(multimodel_causual_output.audio_logits, audio_labels, ignore_index=SOFTMAX_IGNORE_INDEX, topk=topk_list)
+        # 忽略mambaout_token_id 和 ignore_index
+        accuracy_list = self.get_accuracy(multimodel_causual_output.audio_logits, audio_labels, ignore_index=[SOFTMAX_IGNORE_INDEX, self.slow_lm_config.slow_audio_modality_mambaout_token_id], topk=topk_list)
         for k, accuracy in zip(topk_list, accuracy_list):
             self.log(
                 f"{stage}/top_{k}_accuracy",
@@ -564,9 +573,8 @@ if __name__ == "__main__":
     from dmel_codec.dataset.lhotse_tts_dataset import LhotseDataModule
     from functools import partial
     from dmel_codec.utils.schedule import get_cosine_schedule_with_warmup_lr_lambda
-    from dmel_codec.models.codec_lit_modules import VQGAN
     import hydra
-    from omegaconf import DictConfig, OmegaConf
+    from omegaconf import OmegaConf
 
     dataset = LhotseDataModule(
         stage="validate",

@@ -95,7 +95,7 @@ class ChatMusicFastLMModel(Qwen2Model):
             self.slow_lm_to_fast_lm_dim_projector = nn.Identity()
 
     def forward(self, inp, labels):
-        hidden_states = inp.last_hidden_state
+        hidden_states = inp.last_hidden_state # [bs, seq_len, slow_lm_hidden_size]
         
         with torch.no_grad(): # 处理input，不涉及梯度计算
             audio_inputs_ids = torch.where(

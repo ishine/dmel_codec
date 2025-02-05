@@ -8,6 +8,8 @@ from dmel_codec.utils.utils import open_filelist
 from dmel_codec.utils.logger import RankedLogger
 from time import time
 from tqdm import tqdm
+from lhotse.supervision import SupervisionSegment
+
 log = RankedLogger(__name__, rank_zero_only=False)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -18,6 +20,7 @@ class LhotsePreProcess(LightningDataModule):
         # hparams required
         output_dir: str,
         stage: str,
+        codec_or_lm: str,
 
         # recordings, supervisions
         train_recordings_paths: list[str] | None = None,
@@ -112,7 +115,7 @@ class LhotsePreProcess(LightningDataModule):
         # 保留原始的 AudioSource
         audio_source = cut.recording.sources[0]
         
-        # 创建简化版的 Recording
+        # 创建简化版的 Recording, 保留text
         simplified_recording = Recording(
             id=cut.recording.id,
             sources=[audio_source],
@@ -121,15 +124,36 @@ class LhotsePreProcess(LightningDataModule):
             duration=cut.duration,
             channel_ids=cut.recording.channel_ids
         )
-        
-        # 创建简化版的 Cut
-        simplified_cut = MonoCut(
-            id=cut.id,
-            start=cut.start,
-            duration=cut.duration,
-            channel=cut.channel,
-            recording=simplified_recording
-        )
+
+        if self.hparams.codec_or_lm == "codec":
+            # 创建简化版的 Cut
+            simplified_cut = MonoCut(
+                id=cut.id,
+                start=cut.start,
+                duration=cut.duration,
+                channel=cut.channel,
+                recording=simplified_recording
+            )
+        elif self.hparams.codec_or_lm == "lm":
+            # 获取原始的 supervision 信息
+            supervisions = [            
+                SupervisionSegment(    
+                    id=cut.id,
+                    recording_id=cut.recording.id,
+                    start=cut.start,
+                    duration=cut.duration,
+                    text=cut.text,
+                )]
+
+            # 创建简化版的 Cut
+            simplified_cut = MonoCut(
+                id=cut.id,
+                start=cut.start,
+                duration=cut.duration,
+                channel=cut.channel,
+                recording=simplified_recording,
+                supervisions=supervisions
+            )
         
         return simplified_cut
         
@@ -776,24 +800,67 @@ class LhotsePreProcess(LightningDataModule):
 
 
 if __name__ == "__main__":
-    # test
+    # # test
+    # data_module = LhotsePreProcess(
+    #     train_recordings_paths=[
+    #         "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
+    #         "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
+    #         "/sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz",
+    #         "/sdb/data1/lhotse/libritts/libritts_recordings_train-other-500.jsonl.gz",
+    #     ],
+    #     train_supervisions_paths=[
+    #         "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
+    #         "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
+    #         "/sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz",
+    #         "/sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz",
+    #     ],
+    #     train_recordings_prefix=[
+    #         "/sdb/data1/speech/24kHz/LibriTTS",
+    #         "/sdb/data1/speech/24kHz/LibriTTS",
+    #         "/sdb/data1/speech/44.1kHz/Aishell3",
+    #         "/sdb/data1/speech/24kHz/LibriTTS",
+    #     ],
+    #     train_cuts_filelist=[
+    #         "/sdb/data1/lhotse/filelist/emilia/EN/filelist.txt",
+    #     ],
+    #     train_cuts_filelist_prefix=[
+    #         "/sdb/data1/speech/24kHz/Emilia",
+    #     ],
+
+    #     val_recordings_paths=[
+    #         "/sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz"
+    #     ],
+    #     val_supervisions_paths=[
+    #         "/sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz"
+    #     ],
+    #     val_recordings_prefix=["/sdb/data1/speech/24kHz/LibriTTS"],
+
+    #     window_size=3,
+    #     min_duration=3.0,
+    #     num_jobs=40,
+    #     sample_rate=24000,
+    #     output_dir="/home/wzy/projects/dmel_codec",
+    #     stage="fit",
+    #     max_samples=128,
+    #     shuffle_train_cuts=True,
+    #     codec_or_lm="codec",
+    # )
+
+    # data_module.save_cutset()
     data_module = LhotsePreProcess(
         train_recordings_paths=[
             "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-100.jsonl.gz",
             "/sdb/data1/lhotse/libritts/libritts_recordings_train-clean-360.jsonl.gz",
-            "/sdb/data1/lhotse/aishell3/aishell3_recordings_train.jsonl.gz",
             "/sdb/data1/lhotse/libritts/libritts_recordings_train-other-500.jsonl.gz",
         ],
         train_supervisions_paths=[
             "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-100.jsonl.gz",
             "/sdb/data1/lhotse/libritts/libritts_supervisions_train-clean-360.jsonl.gz",
-            "/sdb/data1/lhotse/aishell3/aishell3_supervisions_train.jsonl.gz",
             "/sdb/data1/lhotse/libritts/libritts_supervisions_train-other-500.jsonl.gz",
         ],
         train_recordings_prefix=[
             "/sdb/data1/speech/24kHz/LibriTTS",
             "/sdb/data1/speech/24kHz/LibriTTS",
-            "/sdb/data1/speech/44.1kHz/Aishell3",
             "/sdb/data1/speech/24kHz/LibriTTS",
         ],
         train_cuts_filelist=[
@@ -804,21 +871,22 @@ if __name__ == "__main__":
         ],
 
         val_recordings_paths=[
-            "/sdb/data1/lhotse/libritts/libritts_recordings_dev-clean.jsonl.gz"
+            "/sdb/data1/lhotse/libritts/libritts_recordings_dev-other.jsonl.gz"
         ],
         val_supervisions_paths=[
-            "/sdb/data1/lhotse/libritts/libritts_supervisions_dev-clean.jsonl.gz"
+            "/sdb/data1/lhotse/libritts/libritts_supervisions_dev-other.jsonl.gz"
         ],
         val_recordings_prefix=["/sdb/data1/speech/24kHz/LibriTTS"],
 
-        window_size=3,
-        min_duration=3.0,
+        window_size=None,
+        min_duration=None,
         num_jobs=40,
         sample_rate=24000,
         output_dir="/home/wzy/projects/dmel_codec",
         stage="fit",
         max_samples=128,
         shuffle_train_cuts=True,
+        codec_or_lm="lm",
     )
 
     data_module.save_cutset()

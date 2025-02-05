@@ -35,7 +35,7 @@ model:
 
 callbacks:
   model_checkpoint:
-    dirpath: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/dmel_codec
+    dirpath: ${codec_ckpt_dir}
     filename: '{epoch:03d}-{step:06d}_20hz'
 
 tensorboard_logger:

@@ -43,7 +43,7 @@ def main(config: DictConfig) -> None:
         use_distributed_sampler=False, # Custom bucket sampler, the use_distributed_sampler need to be set to False
     )
 
-    latest_ckpt_path = find_lastest_ckpt(config.get("codec_ckpt_dir", None))
+    latest_ckpt_path = find_lastest_ckpt(config.get("lm_ckpt_dir", None))
     logger.info(f"start_training, latest_ckpt_path: {latest_ckpt_path}")
     trainer.fit(
         model=model,
@@ -55,4 +55,4 @@ def main(config: DictConfig) -> None:
 
 if __name__ == "__main__":
     multiprocessing.set_start_method("spawn")
-    main(cfg)
+    main()

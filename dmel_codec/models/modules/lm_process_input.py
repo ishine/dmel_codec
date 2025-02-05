@@ -36,12 +36,11 @@ class ProcessInputs:
         wav = wav[:, :audio_lengths]
         wav = wav.to(device)
         text_logits = self.text_tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0).to(device)
-        audio_logits = codec_model.encode(
-            wav.unsqueeze(0),
-            torch.tensor(wav.shape[-1], device=device).reshape(
-                -1,
-            ),
-        )[0].squeeze(0).T  # shape(T, codebook_num)
+        with torch.no_grad():
+            audio_logits = codec_model.encode(
+                wav.unsqueeze(0),
+                torch.tensor(wav.shape[-1], device=device).reshape(-1),
+            )[0].squeeze(0).T  # shape(T, codebook_num)
 
         if audio_logits.shape[-1] > self.max_length:
             audio_logits = audio_logits[:, : self.max_length]
@@ -65,7 +64,7 @@ class ProcessInputs:
                 labels: [T, codebook_num + 1]
         """
         # text input_ids create  <SOH><SOT><TOK>...<TOK><EOT><EOH><SOR><SOM>..................text_mamba_out...........<EOM><EOR>
-        # audio input_ids create ......................audio_mamba_out......<SLC><SLC><SLC><ATK>...<ATK><SLC><SLC><SLC>...a_m...
+        # audio input_ids create ......................audio_mamba_out......<SLT><SLT><SLT><ATK>...<ATK><SLT><SLT><SLT>...a_m...
         assert text_logits is not None
         assert audio_logits is not None
         assert device is not None
