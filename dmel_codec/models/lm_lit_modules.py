@@ -292,6 +292,10 @@ class MusicLLM(pl.LightningModule):
             for name in list(checkpoint["state_dict"].keys()):
                 if "codec_model" in name:
                     checkpoint["state_dict"].pop(name)
+    def on_train_batch_end(self, outputs: torch.Tensor | os.Mapping[str, Any] | None, batch: Any, batch_idx: int) -> None:
+        if (batch_idx+1) % self.trainer.accumulate_grad_batches == 0:
+            torch.cuda.empty_cache()
+        return super().on_train_batch_end(outputs, batch, batch_idx)
 
 
 
