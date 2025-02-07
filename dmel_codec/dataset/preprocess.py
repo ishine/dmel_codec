@@ -880,6 +880,7 @@ if __name__ == "__main__":
 
         window_size=None,
         min_duration=None,
+        max_duration=120,
         num_jobs=40,
         sample_rate=24000,
         output_dir="/home/wzy/projects/dmel_codec",
@@ -890,4 +891,3 @@ if __name__ == "__main__":
     )
 
     data_module.save_cutset()
-

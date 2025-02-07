@@ -26,25 +26,39 @@ class ProcessInputs:
         self.max_length = max_length
         self.audio_silence_id = audio_silence_id
         self.text_tokenizer = text_tokenizer
+    
+    def get_audio_logits_parralel(self, wav, audio_lengths, codec_model):
+        with torch.no_grad():
+            audio_logits, logits_lengths = codec_model.encode(
+                wav,
+                audio_lengths
+            )
+            # garatee batch size 1 can be processed
+            if audio_logits.dim() == 2:
+                audio_logits = audio_logits.unsqueeze(0)
 
-    def get_input_label(self, item, codec_model, device):
+            audio_logits_list = []
+            logits_lengths = logits_lengths.view(-1)
+            for i in range(audio_logits.shape[0]):
+                if logits_lengths[i].item() > self.max_length:
+                    audio_logits_tmp = audio_logits[i, :, :self.max_length]
+                else:
+                    audio_logits_tmp = audio_logits[i, :, :logits_lengths[i].item()]
+                audio_logits_list.append(audio_logits_tmp.T) # shape(T, codebook_num)
+
+            return audio_logits_list
+
+
+
+    def get_input_label(self, item, device):
         # input one batch
 
         text = item["text"]
-        wav = item["audios"]
-        audio_lengths = item["audio_lengths"]
-        wav = wav[:, :audio_lengths]
-        wav = wav.to(device)
-        text_logits = self.text_tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0).to(device)
-        with torch.no_grad():
-            audio_logits = codec_model.encode(
-                wav.unsqueeze(0),
-                torch.tensor(wav.shape[-1], device=device).reshape(-1),
-            )[0].squeeze(0).T  # shape(T, codebook_num)
+        audio_logits = item["audio_logits"]
 
-        if audio_logits.shape[-1] > self.max_length:
-            audio_logits = audio_logits[:, : self.max_length]
-        # audio_logits = self.logits_shift(audio_logits.squeeze(0))
+        text_logits = self.text_tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0).to(device)
+
+
         text_modality_tokens, audio_modality_tokens, labels = (
             self.process_2d_logits_train(text_logits, audio_logits, device=device)
         )

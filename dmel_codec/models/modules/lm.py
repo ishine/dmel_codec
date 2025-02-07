@@ -109,12 +109,19 @@ class ChatMusicFastLMModel(Qwen2Model):
                 hidden_states
             )  # [bs, seq_len, hidden_size]
 
+        # 去掉codebook维度的最后一个 ｜ 去掉T维度的第一个，然后在T的末尾补0 (dim=1)
         codebook_embeddings = self.embed_tokens(
-            audio_inputs_ids
+            audio_inputs_ids[:, 1:, :-1]
+        )  # [bs, seq_len - 1, codebook_num - 1, hidden_size]
+
+        # 在T的末尾补0
+        codebook_embeddings = torch.cat(
+            [codebook_embeddings, torch.zeros_like(codebook_embeddings[:, :1, :, :])], dim=1
         )  # [bs, seq_len, codebook_num, hidden_size]
+
         input_embeds = torch.cat(
             [hidden_states[:, :, None, :], codebook_embeddings], dim=2
-        )  # [bs, seq_len, codebook_num + 1, hidden_size]
+        )  # [bs, seq_len, codebook_num, hidden_size]
         b, s, c, h = input_embeds.shape
         input_embeds = input_embeds.view(b * s, c, h)
         outputs = super().forward(inputs_embeds=input_embeds)
@@ -183,9 +190,8 @@ class ChatMusicForCausalLM(nn.Module):
             text_loss -= text_loss
             log.info("Loss is nan or inf, setting to 0")
 
-        # audio_logits: [bs, seq_len, codebook_num + 1, vocab_size], 1 means the text modality semantic token
-        # audio_labels: [bs, seq_len, codebook_num], so we need to expand the first dim of audio_labels to [bs, seq_len, codebook_num + 1]
-        audio_labels = torch.cat([text_labels[:, :, None], audio_labels], dim=2)
+        # audio_logits: [bs, seq_len, codebook_num, vocab_size]
+        # audio_labels: [bs, seq_len, codebook_num]
         audio_loss = self.loss_function(
             audio_logits,
             audio_labels,

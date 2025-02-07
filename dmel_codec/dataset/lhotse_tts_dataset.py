@@ -187,7 +187,7 @@ class LhotseDataModule(LightningDataModule):
             shuffle=False,
             drop_last=False,
             world_size=self.hparams.world_size,
-            buffer_size=50000,
+            buffer_size=100000,
         )
         log.info(f"train_sampler: {self.train_sampler}")
 

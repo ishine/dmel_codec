@@ -15,11 +15,11 @@ trainer:
   accelerator: gpu
   devices: [0]
   precision: bf16
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 4
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
   max_steps: 300_000
-  val_check_interval: 2000
+  val_check_interval: 8000 # actually 8000/4 = 2000
   log_every_n_steps: 50
 
 data:
@@ -27,7 +27,7 @@ data:
   stage: fit
   train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
   val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
-  train_max_durations: 60
+  train_max_durations: 120
   val_max_durations: 5
   train_num_workers: 16
   val_num_workers: 1
@@ -42,7 +42,7 @@ model:
   model_dtype: ${dtype}
   silence_length: 3
   max_length: 4096
-  audio_silence_id:
+  audio_silence_id: # random, TODO: check the audio silence id
   - 1
   - 2
   - 3
@@ -53,6 +53,7 @@ model:
   - 8
   - 9
   - 10
+  codec_ckpt_path: /home/wzy/projects/dmel_codec/ckpt/codec/last.ckpt
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -83,7 +84,7 @@ model:
       _target_: dmel_codec.models.modules.wavenet.WaveNet
       input_channels: 10
       residual_channels: 70
-      residual_layers: 8
+      residual_layers: 20
       dilation_cycle: 4
 
     quantizer:
@@ -92,8 +93,9 @@ model:
       n_codebooks: 1
       n_groups: 10
       levels:
-      - 8
-      - 6
+      - 7
+      - 5
+      - 5
       is_dmel: true
       downsample_factor:
       - 2
