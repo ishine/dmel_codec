@@ -38,6 +38,8 @@ class MusicLLM(pl.LightningModule):
         mllm_model_path: str | None = None,
         model_dtype: str = "bfloat16",
         codec_ckpt_path: str | None = None,
+        weight_text_loss: float = 1.0,
+        weight_audio_loss: float = 1.0,
     ):
         super().__init__()
 
@@ -47,7 +49,12 @@ class MusicLLM(pl.LightningModule):
         self.optimizer_builder = optimizer
         self.lr_scheduler_builder = lr_scheduler
         self.strict_loading = is_strict
-        model = ChatMusicForCausalLM(slow_lm_config, fast_lm_config)
+        model = ChatMusicForCausalLM(
+            slow_lm_config=slow_lm_config,
+            fast_lm_config=fast_lm_config,
+            weight_text_loss=weight_text_loss,
+            weight_audio_loss=weight_audio_loss,
+        )
         if mllm_model_path is None:
             assert text_foundation_model_path is not None
             log.info("Loading qwen2 text base model from pretrained checkpoints")
@@ -79,12 +86,10 @@ class MusicLLM(pl.LightningModule):
 
         # codec
         codec_model.load_state_dict(
-            torch.load(codec_ckpt_path, map_location="cpu")['state_dict'], strict=False
+            torch.load(codec_ckpt_path, map_location="cpu")["state_dict"], strict=False
         )
         self.codec_model = codec_model
-        self.codec_model.eval()
         log.info(f"Loading codec model from {codec_ckpt_path} successfully")
-
         for _, param in self.codec_model.named_parameters():
             param.requires_grad = False
 
@@ -108,13 +113,21 @@ class MusicLLM(pl.LightningModule):
             text_tokenizer=text_tokenizer,
         )
 
-    def get_accuracy(self, logits, labels, ignore_index=[SOFTMAX_IGNORE_INDEX, 179], topk: list[int]=[1, 5]):
+    def get_accuracy(
+        self,
+        logits,
+        labels,
+        ignore_index=[SOFTMAX_IGNORE_INDEX, 179],
+        topk: list[int] = [1, 5],
+    ):
+        logits = logits[:, :-1, :]
+        labels = labels[:, 1:]
         accuracy_list = []
-        
+
         # 创建掩码，标记不需要忽略的位置
         valid_mask = torch.ones_like(labels, dtype=torch.bool)
         for ignore_id in ignore_index:
-            valid_mask &= (labels != ignore_id)
+            valid_mask &= labels != ignore_id
 
         for k in topk:
             _, indices = logits.topk(k, dim=-1)
@@ -126,6 +139,12 @@ class MusicLLM(pl.LightningModule):
             accuracy = correct / valid_mask.sum()
             accuracy_list.append(accuracy)
         return accuracy_list
+
+    # def on_after_backward(self):
+    #     # 打印所有参数的梯度
+    #     for name, param in self.named_parameters():
+    #         if param.grad is not None:
+    #             print(f"Gradient for {name}: {param.grad}")
 
     def configure_optimizers(self):
         # Get weight decay parameters
@@ -181,19 +200,17 @@ class MusicLLM(pl.LightningModule):
     def process_all_input(self, batch):
         inputs_embeds_list = []
         labels_list = []
-        # parallel codec encode
-        audio_logits_list = self.process_inputs_cls.get_audio_logits_parralel(batch["audios"], batch["audio_lengths"], self.codec_model)
+        audio_logits_list = self.process_inputs_cls.get_audio_logits_parralel(
+            batch["audios"], batch["audio_lengths"], self.codec_model
+        )
 
-        # get text modality tokens and audio modality embeddings
         for i in range(len(batch["text"])):
             item = {
                 "text": batch["text"][i],
                 "audio_logits": audio_logits_list[i],
             }
             (text_modality_tokens, audio_modality_tokens, labels) = (
-                self.process_inputs_cls.get_input_label(
-                    item, self.codec_model.device
-                )
+                self.process_inputs_cls.get_input_label(item, self.codec_model.device)
             )
 
             labels_list.append(labels)
@@ -202,8 +219,9 @@ class MusicLLM(pl.LightningModule):
             )
             inputs_embeds_list.append(input_embeds)
 
-        # pad every batch embedding to the same length
-        inputs_embeds = pad_sequence(inputs_embeds_list, batch_first=True, padding_value=0)
+        inputs_embeds = pad_sequence(
+            inputs_embeds_list, batch_first=True, padding_value=0
+        )
         labels = pad_sequence(
             labels_list, batch_first=True, padding_value=SOFTMAX_IGNORE_INDEX
         )
@@ -256,29 +274,34 @@ class MusicLLM(pl.LightningModule):
             sync_dist=not is_train,
             rank_zero_only=True,
         )
-        
-        topk_list = [1, 2, 5, 10, 20]
-        # ignore mambaout_token_id and ignore_id (-100)
-        accuracy_list = self.get_accuracy(multimodel_causual_output.audio_logits, audio_labels, ignore_index=[SOFTMAX_IGNORE_INDEX, self.slow_lm_config.slow_audio_modality_mambaout_token_id], topk=topk_list)
+
+        topk_list = [1, 2, 5, 10, 20, 50, 100, 150]
+        # 忽略mambaout_token_id 和 ignore_index
+        accuracy_list = self.get_accuracy(
+            multimodel_causual_output.audio_logits,
+            multimodel_causual_output.new_audio_labels,
+            ignore_index=[
+                SOFTMAX_IGNORE_INDEX,
+                self.slow_lm_config.slow_audio_modality_mambaout_token_id,
+            ],
+            topk=topk_list,
+        )
         for k, accuracy in zip(topk_list, accuracy_list):
             self.log(
                 f"{stage}/top_{k}_accuracy",
                 accuracy,
-            on_step=is_train,
-            on_epoch=not is_train,
-            prog_bar=True,
-            logger=True,
-            sync_dist=not is_train,
-            rank_zero_only=True,
+                on_step=is_train,
+                on_epoch=not is_train,
+                prog_bar=True,
+                logger=True,
+                sync_dist=not is_train,
+                rank_zero_only=True,
             )
 
         return multimodel_causual_output.loss
 
     def training_step(self, batch, batch_idx):
         return self._step(batch, batch_idx, stage="train")
-
-    def validation_step(self, batch, batch_idx):
-        return self._step(batch, batch_idx, stage="val")
 
     def on_save_checkpoint(self, checkpoint):
         if self.slow_lm_config.lora_config is not None:
@@ -288,16 +311,9 @@ class MusicLLM(pl.LightningModule):
                 if "lora" not in name:
                     state_dict.pop(name)
         else:
-            # remove codec model
             for name in list(checkpoint["state_dict"].keys()):
                 if "codec_model" in name:
                     checkpoint["state_dict"].pop(name)
-    def on_train_batch_end(self, outputs: torch.Tensor | os.Mapping[str, Any] | None, batch: Any, batch_idx: int) -> None:
-        if (batch_idx+1) % self.trainer.accumulate_grad_batches == 0:
-            torch.cuda.empty_cache()
-        return super().on_train_batch_end(outputs, batch, batch_idx)
-
-
 
     # -------------------------- Inference --------------------------
     @torch.no_grad()
@@ -575,6 +591,7 @@ class MusicLLM(pl.LightningModule):
         # # 使用 torch.multinomial 进行采样
         idx_next = torch.multinomial(probs_sort, 1)
         return idx_next.to(dtype=torch.long)
+
 
 if __name__ == "__main__":
     # test train code

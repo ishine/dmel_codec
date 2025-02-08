@@ -54,6 +54,8 @@ model:
   - 9
   - 10
   codec_ckpt_path: /home/wzy/projects/dmel_codec/ckpt/codec/last.ckpt
+  weight_text_loss: 0.1
+  weight_audio_loss: 1.0
 
   optimizer:
     _target_: torch.optim.AdamW
