@@ -542,7 +542,7 @@ class MusicLLM(pl.LightningModule):
         previous_tokens[:now_time_step, :] = self.audio_ids.clone()
         input_embeds_ar = input_embeds
 
-        while self.is_end_of_predict(now_time_step) is False:
+        while self.is_end_of_predict(now_time_step, inference_config) is False:
             win_size = inference_config.windows_length
 
             if now_time_step < win_size:
