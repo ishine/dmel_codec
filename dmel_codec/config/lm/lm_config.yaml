@@ -1,7 +1,7 @@
 dtype: bfloat16
 codec_latent_dim: 700
 seed: 666
-lm_ckpt_dir: /home/wzy/projects/dmel_codec/ckpt/lm
+lm_ckpt_dir: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/lm
 
 # codec
 n_fft: 1024
@@ -13,49 +13,52 @@ sample_rate: 24000
 trainer:
   _target_: lightning.pytorch.Trainer
   accelerator: gpu
-  devices: [0]
+  # devices: [0]
+  devices: -1
+  # devices: [1, 2, 3, 4, 5, 6, 7]
   precision: bf16
-  accumulate_grad_batches: 4
-  gradient_clip_val: 1.0
-  gradient_clip_algorithm: 'norm'
-  max_steps: 300_000
-  val_check_interval: 8000 # actually 8000/4 = 2000
-  log_every_n_steps: 50
+  max_steps: 1200_00000
+  val_check_interval: 120000 # actually 120000 / 60 = 2000 steps
+  log_every_n_steps: 300 # actually 5 * 60 = 300 steps
 
 data:
   _target_: dmel_codec.dataset.lhotse_tts_dataset.LhotseDataModule
   stage: fit
   train_cuts_path: /home/wzy/projects/dmel_codec/train_cuts_windows-3_min_duration-3.0_max_duration-None.jsonl.gz
   val_cuts_path: /home/wzy/projects/dmel_codec/val_cuts_sample-128.jsonl.gz
-  train_max_durations: 120
+  train_max_durations: 80
   val_max_durations: 5
-  train_num_workers: 16
+  train_num_workers: 32
   val_num_workers: 1
-  world_size: 1
+  # world_size: 1
+  world_size: 8
 
 model:
   _target_: dmel_codec.models.lm_lit_modules.MusicLLM
-  slow_lm_config_path: "/home/wzy/projects/dmel_codec/dmel_codec/config/lm/slow_lm_0.5B.json"
-  fast_lm_config_path: "/home/wzy/projects/dmel_codec/dmel_codec/config/lm/fast_lm.json"
-  text_foundation_model_path: "/sdb/model_weight/qwen2-0.5B"
-  text_tokenizer_path: "/sdb/model_weight/qwen2-0.5B"
+  slow_lm_config_path: /home/wzy/projects/dmel_codec/dmel_codec/config/lm/slow_lm_0.5B.json
+  fast_lm_config_path: /home/wzy/projects/dmel_codec/dmel_codec/config/lm/fast_lm.json
+  text_foundation_model_path: /sdb/model_weight/qwen2-0.5B
+  text_tokenizer_path: /sdb/model_weight/qwen2-0.5B
   model_dtype: ${dtype}
   silence_length: 3
   max_length: 4096
-  audio_silence_id: # random, TODO: check the audio silence id
-  - 1
-  - 2
-  - 3
-  - 4
-  - 5
+  audio_silence_id:
+  - 0
+  - 0
+  - 29
+  - 174
+  - 0
   - 6
-  - 7
-  - 8
-  - 9
-  - 10
-  codec_ckpt_path: /home/wzy/projects/dmel_codec/ckpt/codec/last.ckpt
-  weight_text_loss: 0.1
-  weight_audio_loss: 1.0
+  - 0
+  - 146
+  - 146
+  - 6
+  codec_ckpt_path: /home/wzy/projects/dmel_codec/dmel_codec/ckpt/epoch=022-step=906000_20hz.ckpt
+  text_weight: 0.01
+  audio_weight: 1
+  accumulate_grad_batches: 60
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -63,16 +66,16 @@ model:
     lr: 1e-4
     betas: [0.8, 0.99]
     eps: 1e-5
-    weight_decay: 0.01
-  
+    weight_decay: 0.08
+
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.LambdaLR
     _partial_: true
     lr_lambda:
       _target_: dmel_codec.utils.schedule.get_cosine_schedule_with_warmup_lr_lambda
       _partial_: true
-      num_warmup_steps: 2000
-      num_training_steps: ${trainer.max_steps}
+      num_warmup_steps: 1000 # actually 1000 * 60 = 60000 steps
+      num_training_steps: 60_000 # actually 60_000 * 60 = 3600000 steps
       final_lr_ratio: 0.2
 
   codec_model:
@@ -144,15 +147,17 @@ callbacks:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
     monitor: val/audio_loss
     mode: min
-    every_n_train_steps: ${trainer.val_check_interval}
+    every_n_train_steps: 2000 # actually 2000 * 60 = 120000 steps
     # every_n_epochs: 1
     dirpath: ${lm_ckpt_dir}
     filename: '{epoch:03d}-{step:06d}'
     save_top_k: 3
+    save_last: true
     verbose: True
 
 tensorboard_logger:
   _target_: lightning.pytorch.loggers.TensorBoardLogger
   save_dir: /home/wzy/projects/dmel_codec/tb_logs
-  name: lm
+  name: qwen_pretrain_lm_on_finetune_on_libritts_small_weight_t0.05_a1
+  # name: debug
   log_graph: true

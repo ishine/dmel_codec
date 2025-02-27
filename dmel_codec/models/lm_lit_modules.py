@@ -14,6 +14,8 @@ import os
 from transformers.models.qwen2 import Qwen2Tokenizer
 from torch.nn.utils.rnn import pad_sequence
 from time import time
+from einops import rearrange
+from dmel_codec.utils.utils import sample_one_token_from_logits
 
 SOFTMAX_IGNORE_INDEX = -100
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -38,47 +40,63 @@ class MusicLLM(pl.LightningModule):
         mllm_model_path: str | None = None,
         model_dtype: str = "bfloat16",
         codec_ckpt_path: str | None = None,
-        weight_text_loss: float = 1.0,
-        weight_audio_loss: float = 1.0,
+        text_weight: int = 1,
+        audio_weight: int = 1,
+        accumulate_grad_batches: int = 1,
+        gradient_clip_val: float = 1.0,
+        gradient_clip_algorithm: str = "norm",
     ):
         super().__init__()
 
         slow_lm_config = Qwen2Config.from_pretrained(slow_lm_config_path)
         fast_lm_config = FastQwen2ModelArgs.from_pretrained(fast_lm_config_path)
-
+        self.automatic_optimization = False
         self.optimizer_builder = optimizer
         self.lr_scheduler_builder = lr_scheduler
         self.strict_loading = is_strict
+        self.accumulate_grad_batches = accumulate_grad_batches
+        self.gradient_clip_val = gradient_clip_val
+        self.gradient_clip_algorithm = gradient_clip_algorithm
+
         model = ChatMusicForCausalLM(
             slow_lm_config=slow_lm_config,
             fast_lm_config=fast_lm_config,
-            weight_text_loss=weight_text_loss,
-            weight_audio_loss=weight_audio_loss,
+            text_weight=text_weight,
+            audio_weight=audio_weight,
         )
+        self.model = model
         if mllm_model_path is None:
             assert text_foundation_model_path is not None
             log.info("Loading qwen2 text base model from pretrained checkpoints")
             if text_foundation_model_path.endswith(".safetensors"):
-                model.load_state_dict(
+                self.model.load_state_dict(
                     load_file(text_foundation_model_path, device="cpu"), strict=False
                 )
 
             else:
-                model.load_state_dict(
-                    load_file(
-                        os.path.join(text_foundation_model_path, "model.safetensors"),
-                        device="cpu",
-                    ),
+                qwen_pretrain_state_dict = load_file(
+                    os.path.join(text_foundation_model_path, "model.safetensors"),
+                    device="cpu",
+                )
+                qwen_pretrain_state_dict = self.switch_qwen_hf_2_ours(qwen_pretrain_state_dict)
+                self.model.load_state_dict(
+                    qwen_pretrain_state_dict,
                     strict=False,
                 )
+
+                # ensure the padding_idx is 0
+                self.model.slow_model.embed_tokens._fill_padding_idx_with_zero()
             log.info(
                 f"Loading qwen2 mllm model from {text_foundation_model_path} successfully"
             )
 
         else:
             log.info("Loading qwen2 mllm model from pretrained checkpoints")
-
-        self.model = model
+            self.load_state_dict(
+                torch.load(mllm_model_path, map_location="cpu")["state_dict"],
+                strict=False,
+            )
+            log.info(f"Loading qwen2 mllm model from {mllm_model_path} successfully")
 
         self.max_length = max_length
         self.silence_length = silence_length
@@ -100,7 +118,7 @@ class MusicLLM(pl.LightningModule):
             self.codec_model.to(torch.float16)
             self.model.to(torch.float16)
         else:
-            raise ValueError(f"Unsupported model dtype: {model_dtype}")
+            raise ValueError(f"Unsupported model dtype: {model_dtype}, please use 'bfloat16' or 'float16'")
 
         self.slow_lm_config: Qwen2Config = slow_lm_config
         self.fast_lm_config: FastQwen2ModelArgs = fast_lm_config
@@ -112,6 +130,13 @@ class MusicLLM(pl.LightningModule):
             audio_silence_id=audio_silence_id,
             text_tokenizer=text_tokenizer,
         )
+    
+    def switch_qwen_hf_2_ours(self, state_dict):
+        new_state_dict = {}
+        for key in state_dict.keys():
+            new_key = key.replace("model.", "slow_model.")
+            new_state_dict[new_key] = state_dict[key]
+        return new_state_dict
 
     def get_accuracy(
         self,
@@ -178,36 +203,34 @@ class MusicLLM(pl.LightningModule):
             },
         }
 
-    def get_embeds_from_inputs_ids(self, text_logits, audio_logits):
+    def get_embeds_from_inputs_ids(self, text_ids, audio_ids):
         """
-        text_logits: [T]
-        audio_logits: [T, codebook_num]
+            text_ids: [T]
+            audio_ids: [T, codebook_num]
         """
-        text_embeds = self.model.slow_model.embed_tokens(text_logits)
+        text_embeds = self.model.slow_model.embed_tokens(text_ids) # shape = (T, D)
 
-        audio_inputs_embeds = self.model.slow_model.slow_lm_audio_emb(audio_logits)
-        seq_len, codebook_num, hidden_size = audio_inputs_embeds.shape
-        audio_inputs_embeds = audio_inputs_embeds.view(
-            seq_len, codebook_num * hidden_size
-        )
+        audio_inputs_embeds = self.model.slow_model.slow_lm_audio_emb(audio_ids) # shape = (T, codebook_num, D)
+
+        audio_inputs_embeds = rearrange(audio_inputs_embeds, "s c h -> s (c h)") # shape = (T, codebook_num * D)
 
         audio_embeds = self.model.slow_model.slow_audio_hiddenstate_projector(
             audio_inputs_embeds
         )
 
-        return text_embeds + audio_embeds
+        return text_embeds + audio_embeds # shape = (T, D)
 
-    def process_all_input(self, batch):
+    def process_all_input_for_train(self, batch):
         inputs_embeds_list = []
         labels_list = []
-        audio_logits_list = self.process_inputs_cls.get_audio_logits_parralel(
+        audio_ids_list = self.process_inputs_cls.get_audio_ids_parralel(
             batch["audios"], batch["audio_lengths"], self.codec_model
         )
 
         for i in range(len(batch["text"])):
             item = {
                 "text": batch["text"][i],
-                "audio_logits": audio_logits_list[i],
+                "audio_ids": audio_ids_list[i],
             }
             (text_modality_tokens, audio_modality_tokens, labels) = (
                 self.process_inputs_cls.get_input_label(item, self.codec_model.device)
@@ -221,20 +244,24 @@ class MusicLLM(pl.LightningModule):
 
         inputs_embeds = pad_sequence(
             inputs_embeds_list, batch_first=True, padding_value=0
-        )
+        ) # shape = (bs, T, D)
         labels = pad_sequence(
             labels_list, batch_first=True, padding_value=SOFTMAX_IGNORE_INDEX
-        )
+        ) # shape = (bs, T, codebook_num + 1)
         return inputs_embeds, labels[:, :, 0], labels[:, :, 1:]
 
     def _step(self, batch, batch_idx, stage="train"):
         is_train = stage == "train"
         if is_train:
             self.model.train()
+            optimizer = self.optimizers()
+            lr_scheduler = self.lr_schedulers()
         else:
             self.model.eval()
 
-        inputs_embeds, text_labels, audio_labels = self.process_all_input(batch)
+        inputs_embeds, text_labels, audio_labels = self.process_all_input_for_train(
+            batch
+        )
 
         multimodel_causual_output: MultiModalCausalLMOutputWithPast = self.model(
             inputs_embeds=inputs_embeds,
@@ -275,7 +302,7 @@ class MusicLLM(pl.LightningModule):
             rank_zero_only=True,
         )
 
-        topk_list = [1, 2, 5, 10, 20, 50, 100, 150]
+        topk_list = [1, 2, 5, 10, 20, 50]
         # 忽略mambaout_token_id 和 ignore_index
         accuracy_list = self.get_accuracy(
             multimodel_causual_output.audio_logits,
@@ -297,11 +324,49 @@ class MusicLLM(pl.LightningModule):
                 sync_dist=not is_train,
                 rank_zero_only=True,
             )
+        loss = multimodel_causual_output.loss
 
-        return multimodel_causual_output.loss
+        if is_train:
+            # 梯度累积处理
+            accumulated_loss = loss / self.accumulate_grad_batches
+            accumulated_loss.backward()
+
+            if (batch_idx + 1) % self.accumulate_grad_batches == 0:
+                if self.gradient_clip_val is not None:
+                    if self.gradient_clip_algorithm == "norm":
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), 
+                            max_norm=self.gradient_clip_val,
+                            error_if_nonfinite=True
+                        )
+                    elif self.gradient_clip_algorithm == "value":
+                        torch.nn.utils.clip_grad_value_(
+                            self.model.parameters(), 
+                            clip_value=self.gradient_clip_val
+                        )
+                
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+            return {"loss": loss.detach()}
+        else:
+            return loss
+
+    def on_train_batch_end(self, outputs: torch.Tensor | os.Mapping[str, Any] | None, batch: Any, batch_idx: int) -> None:
+        if (batch_idx+1) % (self.accumulate_grad_batches * 3) == 0: # per 3 steps empty cache
+            torch.cuda.empty_cache()
+        return super().on_train_batch_end(outputs, batch, batch_idx)
 
     def training_step(self, batch, batch_idx):
-        return self._step(batch, batch_idx, stage="train")
+        try:
+            return self._step(batch, batch_idx, stage="train")
+        except Exception as _:
+            return {"loss": torch.tensor(0.0).requires_grad_(True).detach()}
+
+    def validation_step(self, batch, batch_idx):
+        torch.cuda.empty_cache()
+        return self._step(batch, batch_idx, stage="val")
 
     def on_save_checkpoint(self, checkpoint):
         if self.slow_lm_config.lora_config is not None:
@@ -361,127 +426,208 @@ class MusicLLM(pl.LightningModule):
 
     @torch.inference_mode()
     def inference_by_text_prompt(self, inference_config):
-        text_logits = self.text_inference_input_processor(inference_config)
-        self.text_prompt_length = text_logits.shape[1]
+        text_ids = self.text_inference_input_processor(inference_config) # shape = (1, T)
+        self.text_prompt_length = text_ids.shape[1]
         self.audio_prompt_length = 0
-        self.text_logits = text_logits  # shape = (1, T)
 
-        self.audio_logits = None  # shape = (codebook_count, T)
         self.codebook_shift = (
-            torch.arange(self.config.audio_codebook_count)
-            * self.config.audio_codebook_size
-        ).to(self.model.device)
-        input_ids = self.process_2d_logits(
-            text_logits, self.audio_logits, mode="infer"
-        ).T.unsqueeze(0)
+            torch.arange(self.slow_lm_config.audio_codebook_count)
+            * self.slow_lm_config.audio_codebook_size
+        ).to(self.device)
+        input_ids = self.process_inputs_cls.process_2d_logits_infer(
+            device=self.device,
+            text_ids=text_ids,
+            audio_ids=None,
+            text_prompt_length=self.text_prompt_length,
+            audio_prompt_length=0,
+        ).T  # (S, Codebook_num)
+        text_input_ids, audio_input_ids = input_ids[:, 0], input_ids[:, 1:]
+        self.text_ids = text_input_ids
+        self.audio_ids = audio_input_ids
+        input_embeds = self.get_embeds_from_inputs_ids(
+            text_input_ids, audio_input_ids
+        ).unsqueeze(0)  # (1, S, H)
+        slow_past_key_values = None
 
-        next_prefilling_token, past_kv = self.prefilling_next_token(
-            input_ids,
-            past_key_values=None,
-            previous_token=None,
-            inference_config=inference_config,
+        # prefilling
+        next_prefilling_token, slow_past_key_values = (
+            self.prefilling_next_token(
+                input_embeds=input_embeds,
+                slow_past_key_values=slow_past_key_values,
+                previous_token=None,
+                inference_config=inference_config,
+            )
         )
-        input_ids_ar = self.process_input_ids_inference(
-            next_prefilling_token.squeeze(1)
-        )
-        self.predict_n_token(input_ids_ar, past_kv, inference_config)
+        input_embeds_ar = self.process_generation_ids(next_prefilling_token)
 
+        self.predict_n_token(input_embeds_ar, slow_past_key_values, inference_config)
+        generation_audio_ids = self.audio_ids[self.text_prompt_length + 6:-1]
+        # deshift audio ids
+        generation_audio_ids = generation_audio_ids - self.codebook_shift
         wav, _ = self.codec_model.decode(
-            self.audio_logits.unsqueeze(0),
-            torch.tensor(self.audio_logits.shape[-1])
-            .to(self.codec_model.device)
-            .unsqueeze(0),
+            indices=generation_audio_ids.T.unsqueeze(0), # (T, Codebook_num) -> (1, Codebook_num, T)
+            feature_lengths=torch.tensor(generation_audio_ids.shape[0]).to(self.codec_model.device).unsqueeze(0),
             return_audios=True,
         )
-        return wav.float().cpu().numpy()
+        return wav.float().cpu().squeeze(0)
 
     def predict_one_token(
-        self, input_ids, past_key_values, inference_config, previous_token=None
+        self,
+        input_embeds,
+        slow_past_key_values,
+        inference_config,
+        previous_token=None,
     ):
-        text_logits, audio_logits, past_kv = self.model.forward_generate(
-            input_ids=input_ids, use_cache=True, past_key_values=past_key_values
+        text_output_dict = self.sample_text_token(
+            input_embeds=input_embeds,
+            inference_config=inference_config,
+            slow_past_key_values=slow_past_key_values,
         )
+        slow_past_key_values = text_output_dict["slow_past_key_values"]
+        slow_lm_hidden_state = text_output_dict["slow_hidden_state"]
+        text_token = text_output_dict["text_token"]
 
-        next_token_list = [
-            self.sample(
-                text_logits,
-                previous_token=None,
-                temperature=inference_config.temperature,
-                top_k=inference_config.top_k,
-                top_p=inference_config.top_p,
-                repetition_penalty=inference_config.windows_penalty,
-            )[0]
-        ]
+        audio_token_generate_list = []
+        # audio generation
+        for i in range(self.fast_lm_config.codebook_nums):
+            if i == 0:  # semantic to first codebook
+                audio_token = self.sample_audio_token(
+                    inference_config=inference_config,
+                    previous_token=previous_token[:, i:i+1].squeeze(1) if previous_token is not None else None,
+                    slow_lm_hidden_state=slow_lm_hidden_state,
+                    fast_lm_ids=None,
+                    use_cache=False,
+                    fast_past_key_values=None, # don't use kv cache in the fast lm
+                )
+                audio_token_generate_list.append(audio_token)
+            else:
+                pad_ids_for_inference = self.audio_ids[1:, :i]  # (bs * seq_len - 1, i) # text_output is the next token, so we need to shift the audio ids for alignment
+                audio_generated_ids = torch.tensor(audio_token_generate_list, device=pad_ids_for_inference.device, dtype=pad_ids_for_inference.dtype).unsqueeze(0)  # (1, i)
+                audio_generated_ids = torch.cat([pad_ids_for_inference, audio_generated_ids], dim=0)  # (bs * seq_len, i)
 
-        for i in range(self.config.audio_codebook_count):
-            next_token_list.append(
-                self.sample(
-                    audio_logits[:, :, i, :],
-                    previous_token=(
-                        previous_token[i + 1, :] if previous_token != None else None
-                    ),
-                    temperature=inference_config.temperature,
-                    top_k=inference_config.top_k,
-                    top_p=inference_config.top_p,
-                    repetition_penalty=inference_config.windows_penalty,
-                )[0]
-            )
+                audio_token = self.sample_audio_token(
+                    inference_config=inference_config,
+                    previous_token=previous_token[:, i:i+1].squeeze(1) if previous_token is not None else None,
+                    slow_lm_hidden_state=slow_lm_hidden_state,
+                    fast_lm_ids=audio_generated_ids,
+                    use_cache=False,
+                    fast_past_key_values=None,
+                )
+                audio_token_generate_list.append(audio_token)
 
-        return torch.stack(next_token_list, dim=0), past_kv
+        return torch.stack([text_token] + audio_token_generate_list, dim=0), slow_past_key_values
 
     def prefilling_next_token(
-        self, input_ids, past_key_values, previous_token, inference_config
+        self,
+        input_embeds,
+        slow_past_key_values,
+        previous_token,
+        inference_config,
     ):
         return self.predict_one_token(
-            input_ids=input_ids,
-            past_key_values=past_key_values,
+            input_embeds=input_embeds,
+            slow_past_key_values=slow_past_key_values,
             previous_token=previous_token,
             inference_config=inference_config,
         )
 
-    def predict_n_token(self, input_ids, past_kv, inference_config):
-        cur_generation_token_nums = 1
-        cur_token = input_ids[:, -1, :].squeeze(0).clone()
-        cur_token[1:] = cur_token[1:] + self.codebook_shift
-        previous_tokens = torch.zeros(
-            (self.config.audio_codebook_count + 1, self.max_length),
-            dtype=torch.long,
-            device=cur_token.device,
-        )
+    def predict_n_token(self, input_embeds, slow_past_key_values, inference_config):
+        now_time_step, _ = self.audio_ids.shape
 
-        previous_tokens[:, 0] = cur_token.clone()
-        input_ids_ar = input_ids
-        past_key_values = past_kv
-        while self.is_end_of_predict(cur_generation_token_nums) == False:
+        previous_tokens = torch.zeros(
+            (self.max_length, self.slow_lm_config.audio_codebook_count),
+            dtype=torch.long,
+            device=input_embeds.device) # shape = (T, Codebook_num)
+
+        previous_tokens[:now_time_step, :] = self.audio_ids.clone()
+        input_embeds_ar = input_embeds
+
+        while self.is_end_of_predict(now_time_step) is False:
             win_size = inference_config.windows_length
-            if cur_generation_token_nums < win_size:
-                window = previous_tokens[:, :win_size]
+
+            if now_time_step < win_size:
+                window = previous_tokens[:now_time_step, :]
             else:
-                window = previous_tokens[
-                    :, cur_generation_token_nums - win_size : cur_generation_token_nums
-                ]
-            next_token, past_kv = self.predict_one_token(
-                input_ids=input_ids_ar,
-                past_key_values=past_key_values,
+                window = previous_tokens[now_time_step - win_size:, :]
+
+            next_token, slow_past_key_values = self.predict_one_token(
+                input_embeds=input_embeds_ar,
+                slow_past_key_values=slow_past_key_values,
                 inference_config=inference_config,
                 previous_token=window,
             )
 
-            cur_generation_token_nums += 1
-            previous_tokens[:, cur_generation_token_nums - 1] = next_token.squeeze(
-                1
-            ).clone()
-            input_ids_ar = self.process_input_ids_inference(next_token.squeeze(1))
-            past_key_values = past_kv
+            now_time_step += 1
+            previous_tokens[now_time_step, :] = next_token[1:, :].squeeze(1).clone() # next_token[0, :] is text token
+            input_embeds_ar = self.process_generation_ids(next_token)
+
+    def sample_text_token(
+        self, input_embeds, inference_config, slow_past_key_values=None
+    ):
+        text_output: MultiModalCausalLMOutputWithPast = (
+            self.model.forward_generate_text(
+                input_embeds=input_embeds,
+                use_cache=True,
+                slow_past_key_values=slow_past_key_values,
+            )
+        )
+
+        text_logits = text_output.text_logits
+
+        text_token = sample_one_token_from_logits(
+            logits=text_logits[0, -1, :], # only one token need to sample
+            previous_token=None,  # text token ignore windows_penalty
+            temperature=inference_config.temperature,
+            top_k=inference_config.top_k,
+            top_p=inference_config.top_p,
+            repetition_penalty=inference_config.windows_penalty,
+        )[0]
+        return {
+            "text_token": text_token,
+            "slow_past_key_values": text_output.slow_past_key_values,
+            "slow_hidden_state": text_output.slow_hidden_states,
+        }
+
+    def sample_audio_token(
+        self,
+        inference_config,
+        previous_token=None,
+        slow_lm_hidden_state=None,
+        fast_lm_ids=None,
+        use_cache=False,
+        fast_past_key_values=None,
+    ):
+        assert (
+            slow_lm_hidden_state is not None or fast_lm_ids is not None
+        ), "slow_lm_hidden_state and fast_lm_ids cannot be both None"
+        audio_output: MultiModalCausalLMOutputWithPast = (
+            self.model.forward_generate_audio(
+                slow_hidden_state=slow_lm_hidden_state,
+                fast_lm_ids=fast_lm_ids,
+                use_cache=use_cache,
+                fast_past_key_values=fast_past_key_values,
+            )
+        )
+        audio_logits = audio_output.audio_logits  # (bs * seq_len, 1, vocab_size)
+        audio_token = sample_one_token_from_logits(
+            logits=audio_logits[-1, -1, :], # only one token need to sample
+            previous_token=previous_token,
+            temperature=inference_config.temperature,
+            top_k=inference_config.top_k,
+            top_p=inference_config.top_p,
+            repetition_penalty=inference_config.windows_penalty,
+        )[0]
+        return audio_token
 
     def is_end_of_predict(self, cur_generation_token_nums):
-        # return (self.text_logits[:, -1].item() == self.config.end_of_music_id) or (cur_generation_token_nums >= self.max_length) or (self.text_logits[:, -1].item() == self.config.end_of_robot_id)
-        return cur_generation_token_nums >= self.max_length
+        return (self.text_ids[-1].item() == self.slow_lm_config.end_of_music_id) or \
+                (cur_generation_token_nums >= self.max_length)
+        # return cur_generation_token_nums >= self.max_length
 
     def text_inference_input_processor(self, inference_config):
-        text_logits = self.text_tokenizer(inference_config.prompt, return_tensors="pt")[
-            "input_ids"
-        ].to(self.model.device)
+        text_logits = self.process_inputs_cls.text_tokenizer(
+            inference_config.prompt, return_tensors="pt"
+        )["input_ids"].to(self.device)
 
         # text_special_token_start = torch.tensor([self.config.start_of_human_id, self.config.bos_token_id],
         #                                              dtype = torch.long).to(self.model.device)
@@ -494,103 +640,30 @@ class MusicLLM(pl.LightningModule):
         # input_ids = torch.cat([text_special_token_start, text_logits, text_special_token_middle_list], dim=0)
         return text_logits
 
-    def process_input_ids_inference(self, next_token):
-        self.text_logits = (
+    def process_generation_ids(self, next_token):
+        """
+            next_token: [codebook_num + 1, 1]: codebook_num + 1 means text_token + codebook_num
+        """
+        self.text_ids = (
             torch.cat(
-                [self.text_logits, next_token[0].unsqueeze(0).unsqueeze(0)], dim=1
+                [self.text_ids, next_token[0]], dim=0
             )
-            if self.text_logits is not None
-            else next_token[0].unsqueeze(0).unsqueeze(0)
-        )
-        next_token[1:] = next_token[1:] - self.codebook_shift
-        self.audio_logits = (
+            if self.text_ids is not None
+            else next_token[0]
+        ) # shape = (T)
+
+        self.audio_ids = (
             torch.cat(
-                [self.audio_logits, next_token[1:].unsqueeze(0).T], dim=1
+                [self.audio_ids, next_token[1:].T], dim=0
             ).squeeze(0)
-            if self.audio_logits is not None
-            else next_token[1:].unsqueeze(0).T
-        )
-        input_ids = self.process_2d_logits(
-            self.text_logits if self.text_prompt_length != 0 else None,
-            self.audio_logits,
-            mode="infer",
-        ).T.unsqueeze(0)
-        return input_ids
-
-    def sample(
-        self,
-        logits,
-        previous_token: Optional[torch.Tensor] = None,
-        temperature=0.7,
-        top_k=50,
-        top_p=0.7,
-        repetition_penalty=1.2,
-    ):
-        probs = self.logits_to_probs(
-            logits[0, -1], previous_token, temperature, top_k, top_p, repetition_penalty
-        )
-
-        idx_next = self.multinomial_sample_one_no_sync(probs)
-        return idx_next, probs
-
-    def logits_to_probs(
-        self,
-        logits: torch.Tensor,
-        previous_tokens: Optional[torch.Tensor] = None,
-        temperature: float = 1.0,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.0,
-    ) -> torch.Tensor:
-        # Apply repetition penalty
-        if previous_tokens is not None:
-            previous_tokens = previous_tokens.long()
-            score = torch.gather(logits, dim=-1, index=previous_tokens)
-            score = torch.where(
-                score < 0, score * repetition_penalty, score / repetition_penalty
-            )
-            logits.scatter_(dim=-1, index=previous_tokens, src=score)
-
-        # Step 1: Apply top-k filtering
-        if top_k > 0:
-            top_k_logits, _ = torch.topk(logits, top_k, dim=-1)
-            min_top_k_logits = top_k_logits[..., -1, None]
-            logits = torch.where(
-                logits < min_top_k_logits,
-                torch.full_like(logits, -float("Inf")),
-                logits,
-            )
-
-        # Step 2: Apply top-p filtering
-        if top_p < 1.0:
-            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-            cum_probs = torch.cumsum(
-                torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
-            )
-            sorted_indices_to_remove = cum_probs > top_p
-            sorted_indices_to_remove[..., 0] = False  # keep at least one option
-            indices_to_remove = sorted_indices_to_remove.scatter(
-                dim=-1, index=sorted_indices, src=sorted_indices_to_remove
-            )
-            logits = logits.masked_fill(indices_to_remove, -float("Inf"))
-
-        logits = logits / max(temperature, 1e-5)
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        return probs
-
-    def multinomial_sample_one_no_sync(
-        self,
-        probs_sort,
-    ):  # Does multinomial sampling without a cuda synchronization
-        # 确保传入的是一个概率分布
-        assert torch.all(probs_sort >= 0), "Probabilities must be non-negative"
-        assert torch.isclose(
-            probs_sort.sum(), torch.tensor(1.0)
-        ), "Probabilities must sum to 1"
-
-        # # 使用 torch.multinomial 进行采样
-        idx_next = torch.multinomial(probs_sort, 1)
-        return idx_next.to(dtype=torch.long)
+            if self.audio_ids is not None
+            else next_token[1:].T
+        ) # shape = (T, Codebook_num)
+        
+        input_embeds = self.get_embeds_from_inputs_ids(
+            self.text_ids, self.audio_ids
+        ).unsqueeze(0) # shape = (1, T, H)
+        return input_embeds
 
 
 if __name__ == "__main__":

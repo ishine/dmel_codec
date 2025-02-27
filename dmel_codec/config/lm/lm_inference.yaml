@@ -1,0 +1,106 @@
+top_p: 0.8
+top_k: 50
+max_new_tokens: 450
+prompt: who are you?
+windows_penalty: 1.2
+windows_length: 16
+num_sampler: 1
+temperature: 0.7
+max_seq_len: 4096
+device: cuda:0
+
+dtype: bfloat16
+n_fft: 1024
+hop_length: 256
+win_length: 1024
+num_mels: 100
+sample_rate: 24000
+
+text_tokenizer_path: /data0/questar/models/hf/qwen2_0.5B
+lm_ckpt_path: /home/wuzhiyue/dmel_codec-wzy_code/dmel_codec/ckpt/lm/qwen_pretrain_lm_on_finetune_on_libritts_small_weight_t0.05_a1/epoch=000-step=004000.ckpt
+# codec_ckpt_path: /data0/questar/users/wuzhiyue/ckpt/dmel_codec/version1_small/finetune_on_libritts_small/epoch=014-step=1375500_20hz.ckpt
+codec_ckpt_path: /data0/questar/users/wuzhiyue/ckpt/dmel_codec/version1_small/finetune_on_libritts_small/epoch=014-step=1375500_20hz.ckpt
+
+model:
+  _target_: dmel_codec.models.lm_lit_modules.MusicLLM
+  slow_lm_config_path: /home/wuzhiyue/dmel_codec-wzy_code/dmel_codec/config/lm/slow_lm_0.5B.json
+  fast_lm_config_path: /home/wuzhiyue/dmel_codec-wzy_code/dmel_codec/config/lm/fast_lm.json
+  silence_length: 3
+  audio_silence_id:
+  - 0
+  - 0
+  - 29
+  - 174
+  - 0
+  - 6
+  - 0
+  - 146
+  - 146
+  - 6
+  max_length: 4096
+  codec_ckpt_path: ${codec_ckpt_path}
+  mllm_model_path: ${lm_ckpt_path}
+  text_tokenizer_path: ${text_tokenizer_path}
+
+  # Codec
+  codec_model:
+    _target_: dmel_codec.models.codec_lit_modules.VQGAN
+    dtype: ${dtype}
+    dmel_groups: 10
+    quanlity_linear: 700
+    sampling_rate: ${sample_rate}
+
+    encoder:
+      _target_: dmel_codec.models.modules.wavenet.WaveNet
+      input_channels: 10
+      residual_channels: 70
+      residual_layers: 20
+      dilation_cycle: 4
+
+    quantizer:
+      _target_: dmel_codec.models.modules.dowmsample_fsq.DownsampleFiniteScalarQuantize
+      input_dim: 700
+      n_codebooks: 1
+      n_groups: 10
+      levels:
+      - 7
+      - 5
+      - 5
+      is_dmel: true
+      downsample_factor:
+      - 2
+      - 2
+    
+    decoder:
+      _target_: dmel_codec.models.modules.wavenet.WaveNet
+      input_channels: 700
+      output_channels: 100
+      residual_channels: 700
+      residual_layers: 20
+      dilation_cycle: 4
+      condition_channels: 700
+
+    vocoder:
+      _target_: dmel_codec.models.modules.bigvgan.bigvgan.BigVGAN
+      ckpt_path: /data0/questar/models/hf/bigvgan_v2_24k_256/bigvgan_generator.pt
+      h_path: /data0/questar/models/hf/bigvgan_v2_24k_256/config.json
+    
+    encode_mel_transform:
+      _target_: dmel_codec.utils.spectrogram.LogMelSpectrogram
+      sample_rate: ${sample_rate}
+      n_fft: ${n_fft}
+      hop_length: ${hop_length}
+      win_length: ${win_length}
+      n_mels: ${num_mels}
+      f_min: 0
+      f_max: 12000
+
+    gt_mel_transform:
+      _target_: dmel_codec.utils.spectrogram.LogMelSpectrogram
+      sample_rate: ${sample_rate}
+      n_fft: ${n_fft}
+      hop_length: ${hop_length}
+      win_length: ${win_length}
+      n_mels: ${num_mels}
+      f_min: 0
+      f_max: 12000

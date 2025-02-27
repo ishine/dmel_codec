@@ -14,6 +14,7 @@ from einops import rearrange
 log = RankedLogger(__name__, rank_zero_only=True)
 SOFTMAX_IGNORE_INDEX = -100
 
+
 @dataclass
 class MultiModalCausalLMOutputWithPast(ModelOutput):
     text_logits: Optional[torch.FloatTensor] = None
@@ -63,8 +64,24 @@ class ChatMusicSlowLMModel(Qwen2Model):
     def forward(
         self,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        *args,
+        **kwargs,
     ):
-        return super().forward(inputs_embeds=inputs_embeds)
+        return super().forward(
+            inputs_embeds=inputs_embeds,
+            *args,
+            **kwargs,
+        )
+
+    def forward_generate(self, input_embeds, use_cache=True, past_key_values=None):
+        """
+            input_embeds: [bs, seq_len, hidden_size]
+        """
+        return super().forward(
+            inputs_embeds=input_embeds,
+            use_cache=use_cache,
+            past_key_values=past_key_values,
+        )
 
 
 class ChatMusicFastLMModel(Qwen2Model):
@@ -75,7 +92,7 @@ class ChatMusicFastLMModel(Qwen2Model):
         self.embed_tokens = nn.Embedding(
             config.vocab_size,
             config.hidden_size,
-            config.audio_pad_token_id,
+            config.audio_pad_token_id, # pad means the unsame length audio pad
         )
         if self.need_project:
             self.slow_lm_to_fast_lm_dim_projector = nn.Linear(
@@ -84,26 +101,30 @@ class ChatMusicFastLMModel(Qwen2Model):
         else:
             self.slow_lm_to_fast_lm_dim_projector = nn.Identity()
 
-        self.pre_norm = Qwen2RMSNorm(config.slow_lm_hidden_size, eps=config.rms_norm_eps)
+        self.pre_norm = Qwen2RMSNorm(
+            config.slow_lm_hidden_size, eps=config.rms_norm_eps
+        )
 
     def forward(self, inp, labels):
-        hidden_states = inp.last_hidden_state # [bs, seq_len, slow_lm_hidden_size]
+        hidden_states = inp.last_hidden_state  # [bs, seq_len, slow_lm_hidden_size]
 
         # preprocess labels
-        with torch.no_grad(): # 处理input，不涉及梯度计算
+        with torch.no_grad():  # 处理input，不涉及梯度计算
 
             # 去掉labels的T维度的第一个，对齐slow_lm的输出
-            labels = labels[:, 1:, :] # [bs, seq_len - 1, codebook_num]
-            
+            labels = labels[:, 1:, :]  # [bs, seq_len - 1, codebook_num]
+
             # 把-100替换为pad_token_id
             audio_inputs_ids = torch.where(
                 labels == SOFTMAX_IGNORE_INDEX,
                 self.fast_lm_config.audio_pad_token_id,
-                labels
+                labels,
             )
 
         # 去掉slow_lm_output的T维度的最后一个，对齐labels
-        hidden_states = hidden_states[:, :-1, :] # [bs, seq_len - 1, slow_lm_hidden_size]
+        hidden_states = hidden_states[
+            :, :-1, :
+        ]  # [bs, seq_len - 1, slow_lm_hidden_size]
         # same with fishspeech
         hidden_states = self.pre_norm(hidden_states)
 
@@ -112,21 +133,54 @@ class ChatMusicFastLMModel(Qwen2Model):
                 hidden_states
             )  # [bs, seq_len - 1, hidden_size]
 
-        codebook_embeddings = self.embed_tokens(audio_inputs_ids)  # [bs, seq_len - 1, codebook_num, hidden_size]
+        codebook_embeddings = self.embed_tokens(
+            audio_inputs_ids
+        )  # [bs, seq_len - 1, codebook_num, hidden_size]
 
         input_embeds = torch.cat(
             [hidden_states[:, :, None, :], codebook_embeddings], dim=2
         )  # [bs, seq_len - 1, codebook_num + 1, hidden_size]
-        # b, s, c, h = input_embeds.shape
-        # input_embeds = input_embeds.view(b * s, c, h)
-        input_embeds = rearrange(input_embeds, 'b s c h -> (b s) c h')
+
+        input_embeds = rearrange(input_embeds, "b s c h -> (b s) c h")
         outputs = super().forward(inputs_embeds=input_embeds)
 
         return outputs, labels
 
+    def forward_generate(self, slow_hidden_state = None, fast_lm_ids = None, use_cache=False, fast_past_key_values=None):
+        """
+            slow_hidden_state: [1, seq_len(1: T+1), hidden_size]
+            fast_lm_ids: None or [1 * seq_len(1: T+1), now_inference_codebook_num]
+        """
+        fast_lm_embeds = None
+        if fast_lm_ids is not None:
+            fast_lm_embeds = self.embed_tokens(fast_lm_ids)
+
+        hidden_states = self.pre_norm(slow_hidden_state)
+        if self.need_project:
+            hidden_states = self.slow_lm_to_fast_lm_dim_projector(
+                hidden_states
+            ).unsqueeze(2)  # [bs, seq_len, 1, fast_lm_hidden_size]
+            
+        hidden_states = rearrange(hidden_states, "b s c h -> (b s) c h")
+        if fast_lm_embeds is not None:
+            hidden_states = torch.cat([hidden_states, fast_lm_embeds], dim=1) # [1 * T, now_inference_codebook_num + 1, hidden_size]
+
+        fast_outputs = super().forward(
+            inputs_embeds=hidden_states,
+            use_cache=use_cache,
+            past_key_values=fast_past_key_values,
+        )
+
+        return fast_outputs
 
 class ChatMusicForCausalLM(nn.Module):
-    def __init__(self, slow_lm_config: Qwen2Config, fast_lm_config: FastQwen2ModelArgs, weight_text_loss: float = 1.0, weight_audio_loss: float = 1.0):
+    def __init__(
+        self,
+        slow_lm_config: Qwen2Config,
+        fast_lm_config: FastQwen2ModelArgs,
+        text_weight: int = 1,
+        audio_weight: int = 1,
+    ):
         super().__init__()
         # new layers
         self.slow_model = ChatMusicSlowLMModel(slow_lm_config)
@@ -138,14 +192,16 @@ class ChatMusicForCausalLM(nn.Module):
             bias=False,
         )
 
+        # audio lm head
         self.audio_lm_head = nn.Linear(
             fast_lm_config.hidden_size,
             fast_lm_config.vocab_size,
             bias=False,
         )
+
         self.loss_function = partial(ForCausalLMLoss, ignore_index=-100)
-        self.weight_text_loss = weight_text_loss
-        self.weight_audio_loss = weight_audio_loss
+        self.text_weight = text_weight
+        self.audio_weight = audio_weight
 
     def forward(
         self,
@@ -154,12 +210,6 @@ class ChatMusicForCausalLM(nn.Module):
         audio_labels: Optional[torch.LongTensor] = None,
         **loss_kwargs,
     ):
-        # text_inputs_ids: [bs, seq_len]
-        # audio_inputs_ids: [bs, seq_len, codebook_num]
-
-        # text_outputs = self.slow_model(
-        #     text_inputs_ids=text_inputs_ids, audio_inputs_ids=audio_inputs_ids
-        # )
         text_outputs = self.slow_model(inputs_embeds=inputs_embeds)
         audio_outputs, audio_labels = self.fast_model(text_outputs, audio_labels)
 
@@ -168,15 +218,15 @@ class ChatMusicForCausalLM(nn.Module):
         text_logits = self.text_lm_head(text_hidden_states)
 
         audio_hidden_states = audio_outputs["last_hidden_state"]
-        audio_logits = self.audio_lm_head(audio_hidden_states) # [bs * (seq_len - 1), codebook_num, vocab_size]
+
+        audio_logits = self.audio_lm_head(audio_hidden_states)  # [bs * (seq_len - 1), codebook_num + 1, vocab_size]
 
         text_loss = None
         audio_loss = None
-
         text_loss = self.loss_function(
             text_logits,
             text_labels,
-            text_logits.shape[-1],
+            self.slow_model.vocab_size,
             **loss_kwargs,
         )
 
@@ -186,21 +236,23 @@ class ChatMusicForCausalLM(nn.Module):
 
         # audio_logits: [bs * (seq_len - 1), codebook_num + 1, vocab_size]
         # audio_labels: [bs, (seq_len - 1), codebook_num], concat text shift labels to align timesteps
-        tmp_text_labels = text_labels[:, 1:]
-        tmp_text_labels = tmp_text_labels.contiguous().view(-1, 1)
-        audio_labels = rearrange(audio_labels, 'b s c -> (b s) c')
-        audio_labels = torch.cat([tmp_text_labels, audio_labels], dim=1)
+        tmp_text_labels = text_labels[:, 1:] # [bs, seq_len - 1]
+        tmp_text_labels = tmp_text_labels.contiguous().view(-1, 1) # [bs * (seq_len - 1), 1]
+        audio_labels = rearrange(audio_labels, "b s c -> (b s) c") # [bs * (seq_len - 1), codebook_num]
+        audio_labels = torch.cat([tmp_text_labels, audio_labels], dim=1) # [bs * (seq_len - 1), codebook_num + 1]
+
         audio_loss = self.loss_function(
             audio_logits,
             audio_labels,
-            audio_logits.shape[-1],
+            self.fast_model.vocab_size,
             **loss_kwargs,
         )
+
         if torch.isnan(audio_loss) or torch.isinf(audio_loss):
             audio_loss -= audio_loss
             log.info("Audio Loss is nan or inf, setting to 0")
 
-        weighted_loss = text_loss * self.weight_text_loss + audio_loss * self.weight_audio_loss
+        weighted_loss = self.text_weight * text_loss + self.audio_weight * audio_loss
 
         return MultiModalCausalLMOutputWithPast(
             loss=weighted_loss,
@@ -217,6 +269,61 @@ class ChatMusicForCausalLM(nn.Module):
             new_audio_labels=audio_labels,
         )
 
+    def forward_generate_text(self, input_embeds, use_cache=True, slow_past_key_values=None):
+        """
+            input_embeds: [1, seq_len, hidden_size]
+        """
+        text_outputs = self.slow_model.forward_generate(
+            input_embeds=input_embeds,
+            use_cache=use_cache,
+            past_key_values=slow_past_key_values,
+        )
+
+        text_logits = self.text_lm_head(text_outputs.last_hidden_state)
+
+        return MultiModalCausalLMOutputWithPast(
+            loss=None,
+            text_loss=None,
+            audio_loss=None,
+            text_logits=text_logits,
+            audio_logits=None,
+            slow_past_key_values=text_outputs.past_key_values,
+            fast_past_key_values=None,
+            slow_hidden_states=text_outputs.last_hidden_state,
+            fast_hidden_states=None,
+            slow_attentions=text_outputs.attentions,
+            fast_attentions=None,
+            new_audio_labels=None,
+        )
+        
+    def forward_generate_audio(self, slow_hidden_state, fast_lm_ids = None, use_cache=False, fast_past_key_values=None):
+        """
+            slow_hidden_state: [1, seq_len(1: T+1), hidden_size]
+            fast_lm_embeds: None or [1 * seq_len(1: T+1), now_inference_codebook_num, hidden_size]
+        """
+        audio_output = self.fast_model.forward_generate(
+            slow_hidden_state=slow_hidden_state,
+            fast_lm_ids=fast_lm_ids,
+            use_cache=use_cache,
+            fast_past_key_values=fast_past_key_values,
+        )
+        
+        audio_logits = self.audio_lm_head(audio_output.last_hidden_state) # [1 * T, now_inference_codebook_num + 1, vocab_size]
+
+        return MultiModalCausalLMOutputWithPast(
+            loss=None,
+            text_loss=None,
+            audio_loss=None,
+            text_logits=None,
+            audio_logits=audio_logits,
+            slow_past_key_values=None,
+            fast_past_key_values=audio_output.past_key_values,
+            slow_hidden_states=None,
+            fast_hidden_states=audio_output.hidden_states,
+            slow_attentions=None,
+            fast_attentions=audio_output.attentions,
+            new_audio_labels=None,
+        )
 
 if __name__ == "__main__":
     device = "cpu"

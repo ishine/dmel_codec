@@ -27,51 +27,49 @@ class ProcessInputs:
         self.audio_silence_id = audio_silence_id
         self.text_tokenizer = text_tokenizer
     
-    def get_audio_logits_parralel(self, wav, audio_lengths, codec_model):
+    def get_audio_ids_parralel(self, wav, audio_lengths, codec_model):
         with torch.no_grad():
-            audio_logits, logits_lengths = codec_model.encode(
+            audio_ids, logits_lengths = codec_model.encode(
                 wav,
                 audio_lengths
             )
             # garatee batch size 1 can be processed
-            if audio_logits.dim() == 2:
-                audio_logits = audio_logits.unsqueeze(0)
+            if audio_ids.dim() == 2:
+                audio_ids = audio_ids.unsqueeze(0)
 
-            audio_logits_list = []
+            audio_ids_list = []
             logits_lengths = logits_lengths.view(-1)
-            for i in range(audio_logits.shape[0]):
+            for i in range(audio_ids.shape[0]):
                 if logits_lengths[i].item() > self.max_length:
-                    audio_logits_tmp = audio_logits[i, :, :self.max_length]
+                    audio_ids_tmp = audio_ids[i, :, :self.max_length]
                 else:
-                    audio_logits_tmp = audio_logits[i, :, :logits_lengths[i].item()]
-                audio_logits_list.append(audio_logits_tmp.T) # shape(T, codebook_num)
+                    audio_ids_tmp = audio_ids[i, :, :logits_lengths[i].item()]
+                audio_ids_list.append(audio_ids_tmp.T) # shape(T, codebook_num)
 
-            return audio_logits_list
-
-
+            return audio_ids_list
 
     def get_input_label(self, item, device):
-        # input one batch
+        # input one sample
 
         text = item["text"]
-        audio_logits = item["audio_logits"]
+        audio_ids = item["audio_ids"]
 
-        text_logits = self.text_tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0).to(device)
+        text_ids = self.text_tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0).to(device)
 
 
         text_modality_tokens, audio_modality_tokens, labels = (
-            self.process_2d_logits_train(text_logits, audio_logits, device=device)
+            self.process_2d_logits_train(text_ids, audio_ids, device=device)
         )
 
         return text_modality_tokens, audio_modality_tokens, labels
 
-    def process_2d_logits_train(self, text_logits=None, audio_logits=None, device=None):
+    def process_2d_logits_train(self, text_ids=None, audio_ids=None, device=None):
         """
             Process 2d logits for LM
-            text_logits: text logits (text_length)
-            audio_logits: audio logits (audio_length, codebook_num)
+            text_ids: text ids (text_length)
+            audio_ids: audio ids (audio_length, codebook_num)
             device: device
-            
+
             return:
                 text_modality_tokens: [T]
                 audio_modality_tokens: [T, codebook_num]
@@ -79,12 +77,13 @@ class ProcessInputs:
         """
         # text input_ids create  <SOH><SOT><TOK>...<TOK><EOT><EOH><SOR><SOM>..................text_mamba_out...........<EOM><EOR>
         # audio input_ids create ......................audio_mamba_out......<SLT><SLT><SLT><ATK>...<ATK><SLT><SLT><SLT>...a_m...
-        assert text_logits is not None
-        assert audio_logits is not None
+
+        assert text_ids is not None
+        assert audio_ids is not None
         assert device is not None
 
-        text_length = text_logits.shape[0]
-        audio_length = audio_logits.shape[0]
+        text_length = text_ids.shape[0]
+        audio_length = audio_ids.shape[0]
         # input_logits = torch.zeros(size=(self.config.audio_codebook_count + 1, text_length + audio_length + self.silence_length*2 + 8), dtype=torch.long)
         labels = torch.full(
             size=(
@@ -103,7 +102,7 @@ class ProcessInputs:
 
         text_modality_tokens = torch.cat([
             text_special_token_start_tensor,
-            (text_logits.squeeze(0) if text_logits.dim() == 2 else text_logits),
+            (text_ids.squeeze(0) if text_ids.dim() == 2 else text_ids),
             text_special_token_middle_tensor,
             text_pad_tokens,
             text_special_token_end_tensor,
@@ -128,13 +127,15 @@ class ProcessInputs:
             [audio_pad_list, audio_pad_list], dtype=torch.long # 2 audio_pad_list for <EOM> and <EOR>
         ).to(device)
 
-        audio_silence_tokens = self.logits_shift(audio_silence_tokens, device=device)
-        audio_logits = self.logits_shift(audio_logits, device=device)
+        audio_silence_tokens = self.id_shift(audio_silence_tokens, device=device)
+        audio_ids = self.id_shift(audio_ids, device=device)
+        # audio_start_pad_tokens = self.id_shift(audio_start_pad_tokens, device=device)
+        # audio_end_pad_tokens = self.id_shift(audio_end_pad_tokens, device=device)
 
         audio_modality_tokens = torch.cat([
             audio_start_pad_tokens,
             audio_silence_tokens,
-            audio_logits,
+            audio_ids,
             audio_silence_tokens,
             audio_end_pad_tokens,
         ], dim=0).to(device)
@@ -148,18 +149,21 @@ class ProcessInputs:
     def process_2d_logits_infer(
         self,
         device,
-        text_logits=None,
-        audio_logits=None,
+        text_ids=None,
+        audio_ids=None,
         audio_prompt_length=0,
         text_prompt_length=0,
     ):
+        """
+            just use in the first process, we need to force llm to generate the audio silence token first
+        """
         if audio_prompt_length == 0 and text_prompt_length > 0:
-            text_logits = text_logits[:, :text_prompt_length]
-            audio_length = audio_logits.shape[-1] if audio_logits is not None else 0
+            text_ids = text_ids[:, :text_prompt_length]
+            audio_length = audio_ids.shape[-1] if audio_ids is not None else 0
 
-        if text_logits == None:
-            assert audio_logits is not None
-            audio_length = audio_logits.shape[-1]
+        if text_ids == None:
+            assert audio_ids is not None
+            audio_length = audio_ids.shape[-1]
 
         # text input_ids create <SOH><SOT><Text>...<Text><EOT><EOH><SOR><SOM>...<EOM><EOR>
         text_modality_tokens = None
@@ -168,30 +172,41 @@ class ProcessInputs:
             text_special_token_middle_tensor,
             _,
             text_pad_tokens,
-        ) = self.get_text_special_token_start_middle_end(audio_length, device)
+        ) = self.get_text_special_token_start_middle_end(audio_length + 1, device) # +1 代表强行塞入一个audio silence token
 
         # Text prompt
         if text_prompt_length > 0:
             audio_pad_list = [
-                self.config.audio_modality_mambaout_token_id
-                for i in range(self.config.audio_codebook_count)
+                self.config.slow_audio_modality_mambaout_token_id
+                for _ in range(self.config.audio_codebook_count)
             ]
             audio_start_pad_tokens = torch.tensor(
                 [
                     audio_pad_list
-                    for _ in range(TEXT_SPECIAL_TOKEN_LENGTH + text_prompt_length - 2) # -2 代表text token的最后有两个special token
+                    for _ in range(TEXT_SPECIAL_TOKEN_LENGTH + text_prompt_length - 2) # -2 代表text token的最后有两个special token, 这里不用 +1，因为这是audio_pad
                 ],
                 dtype=torch.long,
             ).to(device)
+
+            # silence id shift
+            audio_silence_id = self.id_shift(torch.tensor(self.audio_silence_id, 
+                                                dtype=torch.long, 
+                                                device=audio_start_pad_tokens.device).unsqueeze(0), 
+                                    device=audio_start_pad_tokens.device)
+
+            # shift audio start pad tokens
+            # audio_start_pad_tokens = self.id_shift(audio_start_pad_tokens, device=device)
+
+            # 如果是text + audio prompt
             if audio_length > 0:
                 text_modality_tokens = (
                     torch.cat(
                         [
                             text_special_token_start_tensor,
                             (
-                                text_logits.squeeze(0)
-                                if text_logits.dim() == 2
-                                else text_logits
+                                text_ids.squeeze(0)
+                                if text_ids.dim() == 2
+                                else text_ids
                             ),
                             text_special_token_middle_tensor,
                             text_pad_tokens[self.silence_length * 2 :],
@@ -201,45 +216,47 @@ class ProcessInputs:
                     .unsqueeze(0)
                     .to(device)
                 )
+                
+                # shift audio ids
+                audio_ids = self.id_shift(audio_ids, device=device)
                 audio_modality_tokens = torch.cat(
-                    [audio_start_pad_tokens, audio_logits.T], dim=0
+                    [audio_start_pad_tokens, audio_silence_id, audio_ids.T], dim=0
                 ).to(device)
 
+            # 如果是text prompt
             elif audio_length == 0:
                 text_modality_tokens = (
                     torch.cat(
                         [
                             text_special_token_start_tensor,
                             (
-                                text_logits.squeeze(0)
-                                if text_logits.dim() == 2
-                                else text_logits
+                                text_ids.squeeze(0)
+                                if text_ids.dim() == 2
+                                else text_ids
                             ),
                             text_special_token_middle_tensor,
+                            text_pad_tokens[0].unsqueeze(0), # 强行塞入一个audio silence token
                         ],
                         dim=0,
                     )
                     .unsqueeze(0)
                     .to(device)
                 )
-                audio_modality_tokens = audio_start_pad_tokens
-            return torch.cat([text_modality_tokens, audio_modality_tokens.T], dim=0).to(
-                device
-            )
+
+                audio_modality_tokens = torch.cat([audio_start_pad_tokens, audio_silence_id], dim=0).to(device)
+            return torch.cat([text_modality_tokens, audio_modality_tokens.T], dim=0).to(device)
 
         # Audio prompt
         if text_prompt_length == 0:
             text_modality_tokens = text_pad_tokens.unsqueeze(0)[:, :-3].to(device)
-            audio_silence_tokens = torch.tensor(
-                [self.audio_silence_id for i in range(self.silence_length)],
-                dtype=torch.long,
-            ).to(device)
+
+            # shift audio ids
+            audio_ids = self.id_shift(audio_ids, device=device)
+
             audio_modality_tokens = torch.cat(
-                [audio_silence_tokens, audio_logits.T], dim=0
+                [audio_silence_id, audio_ids.T], dim=0
             ).to(device)
-            return torch.cat([text_modality_tokens, audio_modality_tokens.T], dim=0).to(
-                device
-            )
+            return torch.cat([text_modality_tokens, audio_modality_tokens.T], dim=0).to(device)
 
     def get_text_special_token_start_middle_end(self, audio_length, device):
         text_special_token_start_list = []
@@ -281,19 +298,19 @@ class ProcessInputs:
             text_pad_tokens,
         )
 
-    def logits_shift(self, audio_logits, device):
+    def id_shift(self, audio_ids, device):
         """
         labels.shape=[modality, :]
         """
 
-        audio_logits_shift = (
-            torch.arange(self.config.audio_codebook_count, device=audio_logits.device)
+        audio_ids_shift = (
+            torch.arange(self.config.audio_codebook_count, device=audio_ids.device)
             * self.config.audio_codebook_size
         ).to(device)
 
-        audio_logits += audio_logits_shift.unsqueeze(0)
+        audio_ids += audio_ids_shift.unsqueeze(0)
 
-        return audio_logits
+        return audio_ids
 
 
 if __name__ == "__main__":
