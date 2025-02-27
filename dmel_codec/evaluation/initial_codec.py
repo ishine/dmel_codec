@@ -36,7 +36,7 @@ class InitialCodec:
             self.codec = dac.DAC.load(model_path)
 
         elif self.codec_name == "dMel":
-            from dmel_codec.train import get_config
+            from dmel_codec.train_codec import get_config
 
             config = get_config()
             self.codec = hydra.utils.instantiate(config.model, _convert_="partial")

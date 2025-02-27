@@ -1,0 +1,64 @@
+concat_channels_dim: 700
+dmel_groups: 10
+codec_ckpt_dir: /data0/questar/users/wuzhiyue/ckpt/dmel_codec/version1_small
+
+data:
+  stage: fit
+  train_cuts_path: /data0/questar/users/wuzhiyue/libritts/train_cuts_windows-3_min_duration-3.0_max_duration-None_shuffle-True.jsonl.gz
+  val_cuts_path: /data0/questar/users/wuzhiyue/libritts/val_cuts_sample-128.jsonl.gz
+
+  train_max_durations: 210 # dynamic batch size, seconds
+  train_num_workers: 30
+  val_max_durations: 4 # dynamic batch size, seconds
+  val_num_workers: 1
+
+  world_size: 6 # same with GPU number
+
+model:
+  accumulate_grad: 1 # gradient accumulation steps
+
+  encoder:
+    input_channels: 10
+    residual_channels: 70
+    residual_layers: 20
+
+  quantizer:
+    _target_: dmel_codec.models.modules.dowmsample_fsq.DownsampleFiniteScalarQuantize
+    levels:
+    - 7
+    - 5
+    - 5
+    is_dmel: true
+    downsample_factor:
+    - 2
+    - 2
+
+  vocoder:
+    ckpt_path: /data0/questar/models/hf/bigvgan_v2_24k_256/bigvgan_generator.pt
+    h_path: /data0/questar/models/hf/bigvgan_v2_24k_256/config.json
+
+  optimizer:
+    lr: 8e-6
+
+  lr_scheduler:
+    lr_lambda:
+      num_training_steps: 100000 # 100k
+      final_lr_ratio: 0.1
+
+callbacks:
+  model_checkpoint:
+    dirpath: /data0/questar/users/wuzhiyue/ckpt/dmel_codec/version1_small/finetune_on_libritts_small
+    filename: '{epoch:03d}-{step:06d}_20hz'
+
+tensorboard_logger:
+  _target_: lightning.pytorch.loggers.TensorBoardLogger
+  save_dir: /home/wuzhiyue/dmel_codec-wzy_code/dmel_codec/tb_logs/finetune_on_libritts_small
+  name: dmel_codec_20hz
+  log_graph: true
+
+trainer:
+  accelerator: gpu
+  precision: 32
+  devices: -1
+  max_steps: 10000000 # 10000k / 2 = 5000k steps
+  val_check_interval: 500

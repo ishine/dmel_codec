@@ -1,29 +1,15 @@
 import hydra
-import multiprocessing
 import lightning.pytorch as pl
-
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 import dmel_codec
 from dmel_codec.utils.logger import RankedLogger
 from dmel_codec.utils.print_config import print_config_tree
 from dmel_codec.utils.utils import find_lastest_ckpt
+
+dmel_root_path = dmel_codec.__path__[0]
 logger = RankedLogger(__name__, rank_zero_only=True)
 
-
-def get_config():
-    try:
-        base_path = dmel_codec.__path__[0]
-        base_config = OmegaConf.load(f"{base_path}/config/dMel_used.yaml")
-        for special_config_path in base_config.defaults[1:]:
-            special_config = OmegaConf.load(f"{base_path}/config/{special_config_path}")
-            base_config = OmegaConf.merge(base_config, special_config)
-        return base_config
-
-    except Exception as e:
-        logger.error(f"Error loading config: {base_config.defaults[1:]=}, {e=}")
-        raise e
-
-
+@hydra.main(config_path=f"{dmel_root_path}/config/lm", config_name="lm_config.yaml", version_base=None)
 def main(config: DictConfig) -> None:
 
     print_config_tree(config)
@@ -55,7 +41,7 @@ def main(config: DictConfig) -> None:
         use_distributed_sampler=False, # Custom bucket sampler, the use_distributed_sampler need to be set to False
     )
 
-    latest_ckpt_path = find_lastest_ckpt(config.get("codec_ckpt_dir", None))
+    latest_ckpt_path = find_lastest_ckpt(config.get("lm_ckpt_dir", None))
     logger.info(f"start_training, latest_ckpt_path: {latest_ckpt_path}")
     trainer.fit(
         model=model,
@@ -66,6 +52,4 @@ def main(config: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn")
-    cfg = get_config()
-    main(cfg)
+    main()
