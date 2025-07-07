@@ -542,7 +542,7 @@ class MusicLLM(pl.LightningModule):
         previous_tokens[:now_time_step, :] = self.audio_ids.clone()
         input_embeds_ar = input_embeds
 
-        while self.is_end_of_predict(now_time_step) is False:
+        while self.is_end_of_predict(now_time_step, inference_config) is False:
             win_size = inference_config.windows_length
 
             if now_time_step < win_size:
@@ -619,10 +619,9 @@ class MusicLLM(pl.LightningModule):
         )[0]
         return audio_token
 
-    def is_end_of_predict(self, cur_generation_token_nums):
+    def is_end_of_predict(self, cur_generation_token_nums, inference_config):
         return (self.text_ids[-1].item() == self.slow_lm_config.end_of_music_id) or \
-                (cur_generation_token_nums >= self.max_length)
-        # return cur_generation_token_nums >= self.max_length
+                (cur_generation_token_nums >= min(self.max_length, inference_config.max_new_tokens))
 
     def text_inference_input_processor(self, inference_config):
         text_logits = self.process_inputs_cls.text_tokenizer(
