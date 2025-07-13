@@ -1,5 +1,5 @@
 # independent dmel_codec
-An audio codec named dmel_codec
+independent multiple-codebook codec
 
 # Environment build
 1. conda create -n dmel_codec python=3.10
