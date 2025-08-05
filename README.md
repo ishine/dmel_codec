@@ -1,5 +1,6 @@
 # independent dmel_codec
 independent multiple-codebook codec
+slow fast lm like fishspeech or moshi
 
 # Environment build
 1. conda create -n dmel_codec python=3.10
